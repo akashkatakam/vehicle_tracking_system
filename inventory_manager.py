@@ -265,6 +265,49 @@ def log_inward_stock(db: Session, current_branch_id: str, source: str,
                      load_no: str, date_val: date, remarks: str):
     pass # This logic is replaced by VehicleMaster entry
 
+def log_manual_sub_branch_sale(db: Session, chassis_no: str, sale_date: date, remarks: str):
+    """
+    Marks a vehicle as 'Sold' without a SalesRecord.
+    This is for manual sales at sub-branches.
+    """
+    try:
+        # 1. Find the vehicle
+        vehicle = db.query(models.VehicleMaster).filter(
+            models.VehicleMaster.chassis_no == chassis_no
+        ).first()
+
+        if not vehicle:
+            raise Exception(f"Vehicle {chassis_no} not found.")
+
+        if vehicle.status == 'Sold':
+            raise Exception(f"Vehicle {chassis_no} is already marked as 'Sold'.")
+
+        # Get the branch_id from the vehicle itself
+        branch_id = vehicle.current_branch_id
+
+        # 2. Update the VehicleMaster status
+        vehicle.status = 'Sold'
+        
+        # 3. Log the transaction for reporting
+        sale_log = models.InventoryTransaction(
+            Date=sale_date,
+            Transaction_Type=TransactionType.SALE, # Use the 'Sale' transaction type
+            Current_Branch_ID=branch_id,
+            Model=vehicle.model,
+            Variant=vehicle.variant,
+            Color=vehicle.color,
+            Quantity=1,
+            Remarks=f"Manual Sub-Branch Sale. {remarks}"
+        )
+        db.add(sale_log)
+        
+        # 4. Commit the changes
+        db.commit()
+        return True, f"Success: Vehicle {chassis_no} marked as 'Sold'."
+
+    except Exception as e:
+        db.rollback()
+        return False, str(e)
 # ---
 # --- FUNCTIONS FOR SALES LIFECYCLE ---
 # ---

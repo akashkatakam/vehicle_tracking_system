@@ -8,6 +8,7 @@ import models
 from streamlit_qrcode_scanner import qrcode_scanner
 
 from ui.color_code import COLOR_CODE_MAP
+from utils.qr_scanner import qr_scanner_component
 
 # --- HELPER FUNCTIONS ---
 @st.cache_data(ttl=3600)
@@ -213,9 +214,10 @@ def render():
         "📊 Stock View",
         "📥 OEM Inward", 
         "📤 Branch Transfer", 
+        "Sub Branch Sale"
     ]
     
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(tab_list)
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(tab_list)
 
     with tab1:
         render_pdi_assignment_view(branch_id=branch_id)
@@ -371,11 +373,16 @@ def render():
                 remarks_out = st.text_input("Transfer Remarks:")
             
             st.subheader("Add Vehicle to Transfer Batch")
-            chassis_scan_val = qrcode_scanner(key="transfer_scanner")
-            if chassis_scan_val:
-                st.session_state.scanned_chassis = chassis_scan_val
-        
-            chassis_val = st.text_input("Chassis Number:", value=st.session_state.get("scanned_chassis", ""), placeholder="Scan or type Chassis No.")
+            TRANSFER_SCAN_KEY = "scanned_chassis_transfer"
+
+            qr_scanner_component(key="transfer_scanner_webrtc", session_state_key=TRANSFER_SCAN_KEY)
+
+            chassis_val = st.text_input(
+                "Chassis Number (Scan or Type):", 
+                value=st.session_state.get(TRANSFER_SCAN_KEY, ""), 
+                placeholder="Scan QR code or type Chassis No."
+)
+
             
             if st.button("⬇️ Add to Transfer Batch"):
                 if chassis_val:
@@ -401,3 +408,88 @@ def render():
                         st.rerun()
                     except Exception as e: 
                         st.error(f"Error: {e}")
+    
+    with tab6:
+        st.header("Log a Manual Sub-Branch Sale (Batch Mode)")
+        st.info("""
+        Scan multiple vehicles one-by-one to add them to a batch.
+        Then, set a single sale date and remark for all of them and submit at once.
+        """)
+
+        # --- Session state for the batch ---
+        if 'manual_sale_batch' not in st.session_state:
+            st.session_state.manual_sale_batch = []
+        if 'scanned_chassis_manual_sale' not in st.session_state:
+            st.session_state.scanned_chassis_manual_sale = ""
+
+        # --- Section 1: Add Vehicle to Batch ---
+        st.subheader("Add Vehicle to Sale Batch")
+        chassis_scan_val = qrcode_scanner(key="manual_sale_scanner")
+        if chassis_scan_val:
+            st.session_state.scanned_chassis_manual_sale = chassis_scan_val
+    
+        chassis_val = st.text_input(
+            "Chassis Number:", 
+            value=st.session_state.scanned_chassis_manual_sale, 
+            key="manual_sale_chassis"
+        )
+        
+        if st.button("⬇️ Add to Sale Batch"):
+            if not chassis_val:
+                st.warning("Chassis Number is required.")
+            elif chassis_val in st.session_state.manual_sale_batch:
+                st.warning(f"{chassis_val} is already in the batch.")
+            else:
+                st.session_state.manual_sale_batch.append(chassis_val)
+                st.session_state.scanned_chassis_manual_sale = "" # Clear for next scan
+                st.success(f"Added {chassis_val} to batch.")
+                st.rerun()
+
+        # --- Section 2: Display Current Batch ---
+        if st.session_state.manual_sale_batch:
+            st.markdown("##### 📋 Vehicles in Current Sale Batch")
+            st.dataframe(
+                pd.DataFrame(st.session_state.manual_sale_batch, columns=["Chassis Number"]),
+                use_container_width=True, 
+                hide_index=True
+            )
+            if st.button("🗑️ Clear Entire Batch", key="manual_sale_clear"):
+                st.session_state.manual_sale_batch = []
+                st.rerun()
+
+        st.divider()
+
+        # --- Section 3: Submit Batch ---
+        st.subheader("Sale Details (for all vehicles in batch)")
+        
+        with st.container(border=True):
+            c1, c2 = st.columns(2)
+            sale_date = c1.date_input("Date of Sale (for all)", value=date.today())
+            remarks = c2.text_input("Remarks (for all, e.g., 'Sold at Warangal branch')")
+            
+            if st.button("Submit ENTIRE Batch as SOLD", type="primary", use_container_width=True):
+                batch_to_submit = st.session_state.manual_sale_batch
+                
+                if not batch_to_submit:
+                    st.warning("Batch is empty. Please add vehicles before submitting.")
+                elif not remarks:
+                    st.warning("Remarks are required (e.g., which sub-branch).")
+                else:
+                    try:
+                        with SessionLocal() as db:
+                            success, message = mgr.log_bulk_manual_sub_branch_sale(
+                                db, 
+                                chassis_list=batch_to_submit, 
+                                sale_date=sale_date, 
+                                remarks=remarks
+                            )
+                        
+                        if success:
+                            st.success(message)
+                            st.balloons()
+                            st.session_state.manual_sale_batch = [] # Clear batch on success
+                            st.rerun()
+                        else:
+                            st.error(f"Batch Failed: {message}")
+                    except Exception as e:
+                        st.error(f"An application error occurred: {e}")
