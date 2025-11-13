@@ -65,7 +65,7 @@ def render_stock_view_interactive(initial_head_name=None, is_public=False, head_
         selected_ids = [managed_map_local[name] for name in selected_branches]
         
         # --- IMPROVEMENT: Call the cached stock function ---
-        raw_stock_df = mgr.get_multi_branch_stock(db,selected_ids)
+        raw_stock_df = mgr.get_multi_branch_stock(db=db,branch_ids=selected_ids)
         
         if raw_stock_df.empty:
                 st.info("Zero stock recorded across selected branches.")
