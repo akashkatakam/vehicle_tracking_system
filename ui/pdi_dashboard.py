@@ -65,7 +65,7 @@ def render_stock_view_interactive(initial_head_name=None, is_public=False, head_
         selected_ids = [managed_map_local[name] for name in selected_branches]
         
         # --- IMPROVEMENT: Call the cached stock function ---
-        raw_stock_df = mgr.get_multi_branch_stock(selected_ids)
+        raw_stock_df = mgr.get_multi_branch_stock(db,selected_ids)
         
         if raw_stock_df.empty:
                 st.info("Zero stock recorded across selected branches.")
@@ -222,6 +222,40 @@ def render():
     
     with tab2:
         render_pdi_pending_tasks(branch_id=branch_id)
+        st.header("Recently Allotted Vehicles (Last 48 Hours)")
+        
+        try:
+            with SessionLocal() as db:
+                completed_df = mgr.get_completed_sales_last_48h(db, branch_id=branch_id)
+            
+            if completed_df.empty:
+                st.info("No vehicles have completed PDI in the last 48 hours.")
+            else:
+                # These are the specific columns you requested from the SalesRecord model
+                columns_to_show = [
+                    'DC_Number',
+                    'Customer_Name',
+                    'Model',
+                    'Variant',
+                    'Paint_Color',
+                    'engine_no',
+                    'chassis_no'
+                ]
+                
+                # Filter the DataFrame to only these columns
+                display_df = completed_df[columns_to_show]
+                
+                # Rename columns for a cleaner look
+                display_df = display_df.rename(columns={
+                    'Paint_Color': 'Color',
+                    'engine_no': 'Engine Number',
+                    'chassis_no': 'Chassis Number'
+                })
+                
+                st.dataframe(display_df, use_container_width=True, hide_index=True)
+                
+        except Exception as e:
+            st.error(f"An error occurred loading completed tasks: {e}")
     
     with tab3:
         st.header("Operational Stock View")

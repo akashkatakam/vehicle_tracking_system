@@ -2,7 +2,7 @@ from typing import Any, Dict, List
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy import func, case, and_, or_
 import pandas as pd
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 # --- UPDATED: Import all models from the new merged file ---
 import models
 from models import IST_TIMEZONE, TransactionType
@@ -268,6 +268,32 @@ def log_inward_stock(db: Session, current_branch_id: str, source: str,
 # ---
 # --- FUNCTIONS FOR SALES LIFECYCLE ---
 # ---
+def get_completed_sales_last_48h(db: Session, branch_id: str = None) -> pd.DataFrame:
+    """
+    Gets all sales records that completed PDI within the last 48 hours.
+    """
+    # Define the statuses that mean a vehicle is "allotted"
+    allotted_statuses = ['PDI Complete', 'Insurance Done', 'TR Done']
+    
+    # Calculate the time 48 hours ago, using the timezone from models.py
+    time_48h_ago = datetime.now(IST_TIMEZONE) - timedelta(days=2)
+    
+    query = (
+        db.query(models.SalesRecord)
+        .filter(
+            # Check for the correct statuses
+            models.SalesRecord.fulfillment_status.in_(allotted_statuses),
+            # Check that the completion date is within the last 48 hours
+            models.SalesRecord.pdi_completion_date >= time_48h_ago
+        )
+    )
+    
+    if branch_id:
+        query = query.filter(models.SalesRecord.Branch_ID == branch_id)
+        
+    query = query.order_by(models.SalesRecord.pdi_completion_date.desc())
+    
+    return pd.read_sql(query.statement, db.get_bind())
 
 def get_users_by_role(db: Session, role: str) -> List[models.User]:
     """Retrieves all users matching a specific role."""
