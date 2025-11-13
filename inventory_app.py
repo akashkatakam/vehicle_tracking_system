@@ -373,6 +373,7 @@ def render_mechanic_view(username, branch_id=None):
         if task_display_str:
             selected_task = my_tasks[my_tasks['display'] == task_display_str].iloc[0]
             sale_id = int(selected_task['id'])
+            dc_number = str(selected_task['DC_Number'])
             
             st.subheader(f"Complete Task: {selected_task['DC_Number']}")
             st.write(f"**Customer:** {selected_task['Customer_Name']}")
@@ -406,7 +407,7 @@ def render_mechanic_view(username, branch_id=None):
                 else:
                     try:
                         # --- UPDATED: Capture response from manager ---
-                        success, message = mgr.complete_pdi(db, sale_id, chassis_no=chassis_val.strip(), engine_no=None)
+                        success, message = mgr.complete_pdi(db, sale_id, chassis_no=chassis_val.strip(), engine_no=None,dc_number=dc_number)
                         
                         if success:
                             st.success(message)

@@ -264,11 +264,12 @@ class VehicleMaster(Base):
     
     # Status: 'In Stock', 'Allotted', 'Sold'
     status = Column(String(50), default='In Stock', index=True)
-    date_received = Column(DateTime, default=datetime.utcnow)
+    date_received = Column(DateTime, default=datetime.now(IST_TIMEZONE))
     
     # Location and Sale Linking
     current_branch_id = Column(String(10), ForeignKey("branches.Branch_ID"), index=True)
     sale_id = Column(Integer, ForeignKey("sales_records.id"), nullable=True, index=True)
+    dc_number = Column(String(15),nullable=True,index=True)
     
     # Relationships
     current_branch = relationship("Branch", back_populates="vehicles")

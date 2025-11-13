@@ -310,7 +310,7 @@ def assign_pdi_mechanic(db: Session, sale_id: int, mechanic_name: str):
         raise e
 
 # --- UPDATED: This is the new CRITICAL function ---
-def complete_pdi(db: Session, sale_id: int, chassis_no: str, engine_no: str = None):
+def complete_pdi(db: Session, sale_id: int, chassis_no: str, engine_no: str = None,dc_number: str=None):
     """
     Links a scanned vehicle from VehicleMaster to a SalesRecord,
     validates it, and marks PDI as complete.
@@ -340,9 +340,8 @@ def complete_pdi(db: Session, sale_id: int, chassis_no: str, engine_no: str = No
                 return False, f"Error: Vehicle is already '{vehicle.status}' and linked to another sale (ID: {vehicle.sale_id})."
 
         # 4. (Optional but Recommended) Validate vehicle model
-        if vehicle.model.upper() != record.Model.upper():
-            return False, f"Mismatch: Customer wants '{record.Model}', but you scanned a '{vehicle.model}'."
-        # Add more checks for variant/color if needed
+        if vehicle.model.upper() != record.Model.upper() or vehicle.variant.upper() != record.Variant.upper() or vehicle.color != record.Paint_Color:
+            return False, f"Mismatch: Customer wants '{record.Model}/{record.Variant}/{record.Paint_Color}', but you scanned a '{vehicle.model}/{vehicle.variant}/{vehicle.color}'."
         
         # 5. Link and Update (The Transaction)
         
