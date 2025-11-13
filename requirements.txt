@@ -1,0 +1,6 @@
+PyMySQL
+sqlalchemy
+streamlit
+reportlab
+pandas
+streamlit-qrcode-scanner
