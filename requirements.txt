@@ -6,4 +6,3 @@ pandas
 streamlit-qrcode-scanner
 streamlit-webrtc
 opencv-python-headless
-pyzbar
