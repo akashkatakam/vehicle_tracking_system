@@ -376,14 +376,12 @@ def update_insurance_tr_status(db: Session, sale_id: int, updates: Dict[str, Any
             # Update fulfillment status based on progression
             if record.is_tr_done:
                 record.fulfillment_status = "TR Done"
-                
-                # --- NEW: Update VehicleMaster to 'Sold' ---
-                vehicle = db.query(models.VehicleMaster).filter(models.VehicleMaster.sale_id == sale_id).first()
-                if vehicle:
-                    vehicle.status = "Sold"
                     
             elif record.is_insurance_done:
                 record.fulfillment_status = "Insurance Done"
+                vehicle = db.query(models.VehicleMaster).filter(models.VehicleMaster.sale_id == sale_id).first()
+                if vehicle:
+                    vehicle.status = "Sold"
                 
             db.commit()
     except Exception as e:

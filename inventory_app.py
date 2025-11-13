@@ -99,7 +99,7 @@ def render_login_page():
     
     # Load all branches for name lookup on successful login
     try:
-        all_branches = load_config_data()
+        all_branches,_,_ = load_config_data()
     except Exception as e:
         st.error(f"Database Connection Failed: {e}. Check .streamlit/secrets.toml")
         st.stop()
@@ -274,15 +274,21 @@ def render_stock_view_interactive(initial_head_name=None, is_public=False, head_
 # =========================================
 
 def render_pdi_assignment_view(branch_id=None):
+    """
+    View for PDI Admins to assign tasks.
+    Uses a single form with a dropdown searchable by DC Number.
+    """
     st.header("PDI Task Assignment")
     db = next(get_db())
     try:
+        # Get all sales records that are "PDI Pending"
         pending_pdi_data = mgr.get_sales_records_by_status(db, "PDI Pending", branch_id=branch_id)
         
         if pending_pdi_data.empty:
             st.info("No sales are currently pending PDI assignment.")
             return
             
+        # Get all users with the "Mechanic" role
         mechanics = mgr.get_users_by_role(db, "Mechanic")
         mechanic_names = [m.username for m in mechanics]
             
@@ -290,27 +296,58 @@ def render_pdi_assignment_view(branch_id=None):
             st.error("No 'Mechanic' users found. Please create Mechanic accounts to assign tasks.")
             return
 
+        # --- Assignment Form ---
         with st.form("assign_pdi_form"):
             st.subheader("Assign Task")
             
-            pending_pdi_data['display'] = pending_pdi_data['DC_Number'] + " (" + pending_pdi_data['Customer_Name'] + " - " + pending_pdi_data['Model'] + ")"
-            sale_display_str = st.selectbox("Select Sale Record:", pending_pdi_data['display'])
+            # --- Searchable Dropdown ---
+            # Create a display string for the selectbox, starting with the DC_Number
+            # This makes the selectbox searchable by the DC Number.
+            pending_pdi_data['display'] = (
+                pending_pdi_data['DC_Number'] + " (" + 
+                pending_pdi_data['Customer_Name'] + " - " + 
+                pending_pdi_data['Model'] + ")"
+            )
+            
+            # The selectbox is now searchable by the DC Number
+            sale_display_str = st.selectbox(
+                "Select Sale Record (Searchable by DC No.):", 
+                pending_pdi_data['display']
+            )
             
             selected_mechanic = st.selectbox("Assign to Mechanic:", mechanic_names)
             
             submitted = st.form_submit_button("Assign Task")
             
             if submitted:
-                sale_id = pending_pdi_data[pending_pdi_data['display'] == sale_display_str].iloc[0]['id']
-                mgr.assign_pdi_mechanic(db, int(sale_id), selected_mechanic)
-                st.success(f"Task {sale_display_str} assigned to {selected_mechanic}!")
-                st.cache_data.clear()
-                st.rerun()
+                if not sale_display_str:
+                    st.warning("Please select a sale record.")
+                else:
+                    # Find the original 'id' from the selected display string
+                    sale_id = pending_pdi_data[
+                        pending_pdi_data['display'] == sale_display_str
+                    ].iloc[0]['id']
+                    
+                    # Call the manager function to update the database
+                    mgr.assign_pdi_mechanic(db, int(sale_id), selected_mechanic)
+                    
+                    st.success(f"Task {sale_display_str} assigned to {selected_mechanic}!")
+                    
+                    # Clear caches and rerun to refresh the lists
+                    st.cache_data.clear()
+                    st.rerun()
 
+        st.divider()
+        
+        # --- List of Pending Tasks ---
         st.subheader("Pending PDI Assignment List")
-        st.dataframe(pending_pdi_data[['DC_Number', 'Customer_Name', 'Model', 'Variant', 'Paint_Color', 'Sales_Staff']], use_container_width=True)
+        st.dataframe(
+            pending_pdi_data[['DC_Number', 'Customer_Name', 'Model', 'Variant', 'Paint_Color', 'Sales_Staff']], 
+            use_container_width=True
+        )
+        
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"An error occurred: {e}")
     finally:
         db.close()
 
@@ -321,9 +358,6 @@ def render_mechanic_view(username, branch_id=None):
         if username:
             my_tasks = mgr.get_sales_records_for_mechanic(db, username, branch_id=branch_id)
             st.header("My PDI Tasks")
-        else:
-            my_tasks = mgr.get_sales_records_by_status(db, "PDI In Progress", branch_id=branch_id)
-            st.header("All In-Progress PDI Tasks") # Added header for clarity
 
         if my_tasks.empty:
             st.success("No pending tasks. Great job! Tasks will appear here when assigned.")
@@ -334,9 +368,7 @@ def render_mechanic_view(username, branch_id=None):
         # Only show the selectbox if in 'Mechanic' mode (username is provided)
         if username:
             task_display_str = st.selectbox("Select Task to Complete:", my_tasks['display'])
-        else:
-            st.dataframe(my_tasks[['DC_Number', 'Customer_Name', 'Model', 'pdi_assigned_to']], use_container_width=True)
-            return # PDI admin doesn't complete tasks, so we stop here
+         # PDI admin doesn't complete tasks, so we stop here
         
         if task_display_str:
             selected_task = my_tasks[my_tasks['display'] == task_display_str].iloc[0]
@@ -394,7 +426,10 @@ def render_mechanic_view(username, branch_id=None):
     finally:
         db.close()
 
-
+def render_pdi_pending_tasks(branch_id: str =None):
+    my_tasks = mgr.get_sales_records_by_status(db, "PDI In Progress", branch_id=branch_id)
+    st.header("All In-Progress PDI Tasks") # Added header for clarity
+    st.dataframe(my_tasks[['DC_Number', 'Customer_Name', 'Model', 'pdi_assigned_to']], use_container_width=True)
 # =========================================
 # MAIN APP LOGIC
 # =========================================
@@ -460,8 +495,7 @@ else:
             render_pdi_assignment_view(branch_id=branch_id)
         
         with tab2:
-            st.info("This is a view of all tasks. Log in as a 'Mechanic' to see your specific queue.")
-            render_mechanic_view(username=None, branch_id=branch_id) # Show all tasks if username is None
+            render_pdi_pending_tasks(branch_id=branch_id)
         
         with tab3:
             st.header("Operational Stock View")
@@ -607,21 +641,20 @@ else:
                     remarks_out = st.text_input("Transfer Remarks:")
                 
                 st.subheader("Add Vehicle to Transfer Batch")
-                
-                # Scan or type chassis
                 chassis_scan_val = qrcode_scanner(key="transfer_scanner")
                 if chassis_scan_val:
                     st.session_state.scanned_chassis = chassis_scan_val
+            
+                chassis_val = st.text_input("Chassis Number:", value=st.session_state.get("scanned_chassis", ""), placeholder="Click Scan button or type Chassis No.")
                 
-                chassis_no_out = st.text_input("Chassis Number:", value=st.session_state.get("scanned_chassis", ""), placeholder="Scan or type Chassis No.")
-
+                # Scan or type chassis
                 if st.button("⬇️ Add to Transfer Batch"):
-                    if not chassis_no_out:
+                    if not chassis_val:
                         st.warning("Chassis Number is required.")
                     else:
-                        st.session_state.transfer_batch.append(chassis_no_out)
+                        st.session_state.transfer_batch.append(chassis_val)
                         st.session_state.scanned_chassis = "" # Clear for next scan
-                        st.success(f"Added {chassis_no_out} to transfer list.")
+                        st.success(f"Added {chassis_val} to transfer list.")
                         st.rerun()
                 
                 # Display transfer batch (just a list of strings)
