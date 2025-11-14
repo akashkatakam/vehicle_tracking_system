@@ -8,7 +8,6 @@ import models
 from streamlit_qrcode_scanner import qrcode_scanner
 
 from ui.color_code import COLOR_CODE_MAP
-from utils.qr_scanner import qr_scanner_component
 
 # --- HELPER FUNCTIONS ---
 @st.cache_data(ttl=3600)
@@ -214,15 +213,21 @@ def render():
         "📊 Stock View",
         "📥 OEM Inward", 
         "📤 Branch Transfer", 
-        "Sub Branch Sale"
+        "📤 Sub-Branch Sale"
     ]
     
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(tab_list)
+    selected_tab = selected_tab = st.radio(
+        "Select View", 
+        tab_list, 
+        horizontal=True, 
+        label_visibility="collapsed"
+    )
 
-    with tab1:
+# Now, use if/elif blocks to render ONLY the active tab's content
+    if selected_tab == "📋 PDI Assignment":
         render_pdi_assignment_view(branch_id=branch_id)
-    
-    with tab2:
+
+    elif selected_tab == "🔧 In-Progress Tasks":
         render_pdi_pending_tasks(branch_id=branch_id)
         st.header("Recently Allotted Vehicles (Last 48 Hours)")
         
@@ -259,7 +264,7 @@ def render():
         except Exception as e:
             st.error(f"An error occurred loading completed tasks: {e}")
     
-    with tab3:
+    elif selected_tab == "📊 Stock View":
         st.header("Operational Stock View")
         render_stock_view_interactive(initial_head_name=current_head_name, is_public=False, head_map_global=head_map)
         
@@ -289,7 +294,7 @@ def render():
         except Exception as e:
             st.error(f"Error loading history: {e}")
     
-    with tab4:
+    elif selected_tab == "📥 OEM Inward":
         st.header(f"Stock Arrival at {current_head_name}")
         st.info("Upload a CSV file to add new vehicles to the VehicleMaster.")
         
@@ -361,7 +366,7 @@ def render():
             except Exception as e:
                 st.error(f"An error occurred while processing the file: {e}")
     
-    with tab5:
+    elif selected_tab == "📤 Branch Transfer":  
         st.header("Transfer to Sub-Dealer")
         if not sub_branch_map:
             st.warning(f"No sub-branches configured for {current_head_name}.")
@@ -373,15 +378,15 @@ def render():
                 remarks_out = st.text_input("Transfer Remarks:")
             
             st.subheader("Add Vehicle to Transfer Batch")
-            TRANSFER_SCAN_KEY = "scanned_chassis_transfer"
-
-            qr_scanner_component(key="transfer_scanner_webrtc", session_state_key=TRANSFER_SCAN_KEY)
+            chassis_scan_val = qrcode_scanner(key="transfer_scanner")
+            if chassis_scan_val:
+                st.session_state.scanned_chassis = chassis_scan_val
 
             chassis_val = st.text_input(
-                "Chassis Number (Scan or Type):", 
-                value=st.session_state.get(TRANSFER_SCAN_KEY, ""), 
-                placeholder="Scan QR code or type Chassis No."
-)
+                "Chassis Number:", 
+                value=st.session_state.get("scanned_chassis", ""), 
+                placeholder="Click Scan button or type Chassis No."
+            )
 
             
             if st.button("⬇️ Add to Transfer Batch"):
@@ -408,13 +413,9 @@ def render():
                         st.rerun()
                     except Exception as e: 
                         st.error(f"Error: {e}")
-    
-    with tab6:
+
+    elif selected_tab == "📤 Sub-Branch Sale":
         st.header("Log a Manual Sub-Branch Sale (Batch Mode)")
-        st.info("""
-        Scan multiple vehicles one-by-one to add them to a batch.
-        Then, set a single sale date and remark for all of them and submit at once.
-        """)
 
         # --- Session state for the batch ---
         if 'manual_sale_batch' not in st.session_state:
@@ -427,10 +428,10 @@ def render():
         chassis_scan_val = qrcode_scanner(key="manual_sale_scanner")
         if chassis_scan_val:
             st.session_state.scanned_chassis_manual_sale = chassis_scan_val
-    
+
         chassis_val = st.text_input(
             "Chassis Number:", 
-            value=st.session_state.scanned_chassis_manual_sale, 
+            value=st.session_state.get("scanned_chassis_manual_sale", ""), 
             key="manual_sale_chassis"
         )
         
