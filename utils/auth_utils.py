@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 
 # --- 1. COOKIE MANAGER ---
 # Initialize it here to be used by all other files
-storage = LocalStorage()
 # --- 2. OTP FUNCTIONS ---
 def send_sms_otp(phone_number: str) ->  dict:
     """Sends the OTP via your chosen SMS Gateway."""
@@ -48,6 +47,7 @@ def verify_sms_otp(details:str,otp:str):
 # --- 3. SESSION/COOKIE FUNCTIONS ---
 def create_user_session(db: Session, user_id: int):
     """Generates a secure token, saves it to the DB, and sets the cookie."""
+    storage = LocalStorage()
     token = secrets.token_hex(32)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     expiry = datetime.now() + timedelta(days=7) # 7-day persistent login
@@ -64,6 +64,7 @@ def create_user_session(db: Session, user_id: int):
 
 def delete_user_session(db: Session):
     """Deletes the session from the DB and the cookie from the browser."""
+    storage = LocalStorage()
     token = storage.getItem('pdi_auth_token')
     if token:
         token_hash = hashlib.sha256(token.encode()).hexdigest()
@@ -75,6 +76,7 @@ def attempt_auto_login():
     """
     Safely checks for a valid session token in localStorage.
     """
+    storage = LocalStorage()
     if st.session_state.get("inventory_logged_in", False):
         return  # Already logged in
 
