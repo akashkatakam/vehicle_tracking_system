@@ -4,7 +4,7 @@ from sqlalchemy import (
     ForeignKey, DateTime, UniqueConstraint, Date, Index
 )
 from sqlalchemy.orm import relationship, declarative_base
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import os
 import pytz
@@ -301,6 +301,7 @@ class User(Base):
     ), nullable=False)
 
     Branch_ID = Column(String(10), ForeignKey("branches.Branch_ID"), nullable=True)
+    phone_number = Column(String(20), nullable=True)
     
     branch = relationship("Branch", back_populates="users")
     
@@ -329,3 +330,22 @@ class User(Base):
             100000
         )
         return hash_bytes.hex(), salt_bytes.hex()
+
+class UserSession(Base):
+    """
+    Stores secure, persistent session tokens for 'Remember Me' functionality.
+    """
+    __tablename__ = "user_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Store a HASH of the session token, not the token itself
+    session_token_hash = Column(String(255), unique=True, index=True, nullable=False)
+
+    # Link to the user
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    # Set an expiry date for the session
+    expiry_date = Column(DateTime, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.now(IST_TIMEZONE))

@@ -10,7 +10,6 @@ from streamlit_qrcode_scanner import qrcode_scanner
 from ui.color_code import COLOR_CODE_MAP
 
 # --- HELPER FUNCTIONS ---
-@st.cache_data(ttl=3600)
 def load_config_data():
     """Loads branches and vehicle master data once."""
     with SessionLocal() as db:
