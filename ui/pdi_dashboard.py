@@ -268,30 +268,61 @@ def render():
         render_stock_view_interactive(initial_head_name=current_head_name, is_public=False, head_map_global=head_map)
         
         st.subheader("🚚 Daily Transfer Summary")
+        st.header("Daily Transfer Summary & History")
+
+    # --- Filters ---
+        with st.container(border=True):
+            c1, c2, c3 = st.columns([2, 1, 1])
+
+            # Branch Filter
+            # We use the head_map we loaded earlier, plus an 'All' option
+            branch_options = ["All Branches"] + list(all_branch_map.keys())
+            selected_branch_name = c1.selectbox("Filter by Branch:", branch_options)
+
+            # Date Filter
+            start_date = c2.date_input("Start Date", value=date.today().replace(day=1))
+            end_date = c3.date_input("End Date", value=date.today())
+
+        # --- Fetch Data ---
         try:
             with SessionLocal() as db:
-                transfer_summary = mgr.get_daily_transfer_summary(db)
-            if not transfer_summary.empty:
-                st.dataframe(transfer_summary, use_container_width=True, hide_index=True, height=300)
+                # Resolve the branch ID (if not 'All')
+                target_branch_id = None
+                if selected_branch_name != "All Branches":
+                    target_branch_id = all_branch_map[selected_branch_name]
+
+                history_df = mgr.get_transfer_history(db, target_branch_id, start_date, end_date)
+
+            if history_df.empty:
+                st.info("No transfers found for the selected criteria.")
             else:
-                st.info("No transfers recorded recently.")
-        except Exception as e:
-            st.error(f"Error loading transfer summary: {e}")
-        
-        st.divider()
-        st.subheader(f"📜 Detailed Activity for {current_head_name}")
-        try:
-            with SessionLocal() as db:
-                hist_df = mgr.get_recent_transactions(db, current_head_id)
-            if not hist_df.empty:
+                # --- Summary Metrics ---
+                total_moved = history_df['Quantity'].sum()
+                # Count unique days with activity
+                active_days = history_df['Date'].nunique()
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Total Vehicles Moved", int(total_moved))
+                m2.metric("Active Transfer Days", active_days)
+
+                st.divider()
+
+                # --- Detailed Table ---
+                st.subheader("Detailed Movement Log")
+
+                # Style the dataframe to highlight IN vs OUT
+                def highlight_direction(val):
+                    color = '#d4edda' if val == 'INWARD' else '#f8d7da' # Green for IN, Red for OUT
+                    return f'background-color: {color}'
+
                 st.dataframe(
-                    hist_df[['Date', 'Transaction_Type', 'Model', 'Color', 'Quantity', 'Remarks']], 
-                    use_container_width=True, hide_index=True, height=400
+                    history_df.style.applymap(highlight_direction, subset=['Transaction_Type']),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=500
                 )
-            else:
-                st.caption("No recent transactions for this branch.")
         except Exception as e:
-            st.error(f"Error loading history: {e}")
+            st.error(f"Error loading transfer history: {e}")
     
     elif selected_tab == "📥 OEM Inward":
         st.header(f"Stock Arrival at {current_head_name}")
@@ -493,3 +524,4 @@ def render():
                             st.error(f"Batch Failed: {message}")
                     except Exception as e:
                         st.error(f"An application error occurred: {e}")
+    

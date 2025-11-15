@@ -119,6 +119,50 @@ def get_vehicle_master_data(db: Session) -> dict:
         master_data[v.Model][v.Variant] = colors
     return master_data
 
+def get_transfer_history(db: Session, branch_id: str = None, start_date: date = None, end_date: date = None) -> pd.DataFrame:
+    """
+    Retrieves a detailed history of vehicle transfers (IN and OUT).
+    Can be filtered by a specific branch and date range.
+    """
+    # Alias for joining Branch names
+    FromBranch = aliased(models.Branch)
+    ToBranch = aliased(models.Branch)
+    
+    query = (
+        db.query(
+            models.InventoryTransaction.Date,
+            models.InventoryTransaction.Transaction_Type,
+            FromBranch.Branch_Name.label("From_Branch"),
+            ToBranch.Branch_Name.label("To_Branch"),
+            models.InventoryTransaction.Model,
+            models.InventoryTransaction.Variant,
+            models.InventoryTransaction.Color,
+            models.InventoryTransaction.Quantity,
+            models.InventoryTransaction.Remarks
+        )
+        .outerjoin(FromBranch, models.InventoryTransaction.From_Branch_ID == FromBranch.Branch_ID)
+        .outerjoin(ToBranch, models.InventoryTransaction.To_Branch_ID == ToBranch.Branch_ID)
+        .filter(models.InventoryTransaction.Transaction_Type.in_([
+            TransactionType.OUTWARD_TRANSFER, 
+            TransactionType.INWARD_TRANSFER
+        ]))
+        .order_by(models.InventoryTransaction.Date.desc(), models.InventoryTransaction.id.desc())
+    )
+
+    # Apply Filters
+    if branch_id:
+        query = query.filter(or_(
+            models.InventoryTransaction.From_Branch_ID == branch_id,
+            models.InventoryTransaction.To_Branch_ID == branch_id
+        ))
+    
+    if start_date:
+        query = query.filter(models.InventoryTransaction.Date >= start_date)
+        
+    if end_date:
+        query = query.filter(models.InventoryTransaction.Date <= end_date)
+
+    return pd.read_sql(query.statement, db.get_bind())
 # --- WRITE FUNCTIONS (Existing) ---
 
 # --- MODIFIED: This function is now OBSOLETE for bulk inward.
