@@ -4,6 +4,4 @@ streamlit
 reportlab
 pandas
 streamlit-qrcode-scanner
-streamlit-webrtc
-opencv-python-headless
-streamlit-local-storage
+extra-streamlit-components

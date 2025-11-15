@@ -9,7 +9,7 @@ from utils.auth_utils import (
     get_branch_name
 )
 
-def render():
+def render(cookie_manager):
     """
     Renders a simple 1-step login flow using ONLY the mobile number.
     WARNING: This bypasses OTP verification.
@@ -49,7 +49,7 @@ def render():
                                 st.session_state.inventory_branch_name = get_branch_name(db, user.Branch_ID)
 
                                 # Create the persistent "Remember Me" session
-                                create_user_session(db, user.id)
+                                create_user_session(db, user.id,cookie_manager)
                                 
                                 st.rerun()
                             else:
