@@ -1,5 +1,6 @@
 # inventory_app.py
 import streamlit as st
+import extra_streamlit_components as stx
 from ui import login, mechanic_tasks, pdi_dashboard
 from database import SessionLocal
 from utils.auth_utils import attempt_auto_login, delete_user_session
@@ -22,10 +23,12 @@ if 'scanned_chassis' not in st.session_state: st.session_state.scanned_chassis =
 
 # --- MAIN APP ROUTER ---
 def main():
-    attempt_auto_login()
+    cookie_manager = stx.CookieManager()
+
+    attempt_auto_login(cookie_manager)
     if not st.session_state.inventory_logged_in:
         # User is not logged in, render the login page
-        login.render()
+        login.render(cookie_manager)
     else:
         # User is logged in, show the correct dashboard based on role
         
@@ -40,7 +43,7 @@ def main():
                 for key in st.session_state.keys():
                     del st.session_state[key]
                 with SessionLocal() as db:
-                    delete_user_session(db)
+                    delete_user_session(db,cookie_manager)
                 st.rerun()
             st.markdown("---")
         
