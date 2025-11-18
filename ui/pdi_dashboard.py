@@ -215,7 +215,7 @@ def render():
         "📤 Sub-Branch Sale"
     ]
     
-    selected_tab = selected_tab = st.radio(
+    selected_tab = st.radio(
         "Select View", 
         tab_list, 
         horizontal=True, 
@@ -245,7 +245,8 @@ def render():
                     'Variant',
                     'Paint_Color',
                     'engine_no',
-                    'chassis_no'
+                    'chassis_no',
+                    'pdi_assigned_to'
                 ]
                 
                 # Filter the DataFrame to only these columns
@@ -255,7 +256,8 @@ def render():
                 display_df = display_df.rename(columns={
                     'Paint_Color': 'Color',
                     'engine_no': 'Engine Number',
-                    'chassis_no': 'Chassis Number'
+                    'chassis_no': 'Chassis Number',
+                    'pdi_assigned_to': 'PDI Completed By'
                 })
                 
                 st.dataframe(display_df, use_container_width=True, hide_index=True)
@@ -267,62 +269,73 @@ def render():
         st.header("Operational Stock View")
         render_stock_view_interactive(initial_head_name=current_head_name, is_public=False, head_map_global=head_map)
         
-        st.subheader("🚚 Daily Transfer Summary")
-        st.header("Daily Transfer Summary & History")
+        st.header("Vehicle Movement Reports")
+        
+        # Report Type Selector outside the date container
+        report_type = st.selectbox(
+            "Select Report Type:",
+            # Options list is now simplified
+            ["Summary: Outward (Head -> Branches)", "Summary: OEM Inward (HMSI)"] 
+        )
 
-    # --- Filters ---
         with st.container(border=True):
             c1, c2, c3 = st.columns([2, 1, 1])
+            
+            # --- Conditional Branch Input (c1) ---
+            if report_type == "Summary: Outward (Head -> Branches)":
+                # Use current_head_name directly for the source branch
+                c1.text_input("Source Branch (Operating Context):", value=current_head_name, disabled=True)
+                report_branch_id = current_head_id
+                
+            elif report_type == "Summary: OEM Inward (HMSI)":
+                # Allow selecting any branch for OEM receipts
+                branch_options = list(all_branch_map.keys())
+                # Note: We must get the ID of the selected branch for the report
+                selected_branch_name = c1.selectbox("Select Branch for HMSI Report:", branch_options, key="hmsi_branch_select")
+                report_branch_id = all_branch_map[selected_branch_name]
 
-            # Branch Filter
-            # We use the head_map we loaded earlier, plus an 'All' option
-            branch_options = ["All Branches"] + list(all_branch_map.keys())
-            selected_branch_name = c1.selectbox("Filter by Branch:", branch_options)
-
-            # Date Filter
+            # Date Range (c2, c3)
             start_date = c2.date_input("Start Date", value=date.today().replace(day=1))
             end_date = c3.date_input("End Date", value=date.today())
 
-        # --- Fetch Data ---
+        # --- Logic Router ---
         try:
             with SessionLocal() as db:
-                # Resolve the branch ID (if not 'All')
-                target_branch_id = None
-                if selected_branch_name != "All Branches":
-                    target_branch_id = all_branch_map[selected_branch_name]
+                
+                # REPORT 1: Outward Summary (Head -> Branches)
+                if report_type == "Summary: Outward (Head -> Branches)":
+                    st.subheader(f"📤 Outward Summary: From {current_head_name}")
+                    # Use current_head_id directly
+                    summary_df = mgr.get_branch_transfer_summary(db, current_head_id, start_date, end_date)
+                    
+                    if summary_df.empty:
+                        st.info(f"No vehicles sent from {current_head_name} in this period.")
+                    else:
+                        pivot_df = summary_df.pivot_table(
+                            index=['Model', 'Variant', 'Color'], 
+                            columns='Destination_Branch', 
+                            values='Total_Quantity', 
+                            aggfunc='sum',
+                            fill_value=0
+                        )
+                        pivot_df['TOTAL'] = pivot_df.sum(axis=1)
+                        
+                        st.dataframe(pivot_df, use_container_width=True)
+                        st.metric("Total Vehicles Sent", int(pivot_df['TOTAL'].sum()))
+                        
+                # REPORT 2: OEM Inward (HMSI -> Branch)
+                elif report_type == "Summary: OEM Inward (HMSI)":
+                    st.subheader(f"📥 OEM Inward Summary: {all_branch_map.get(report_branch_id)}")
+                    oem_df = mgr.get_oem_inward_summary(db, report_branch_id, start_date, end_date)
+                    
+                    if oem_df.empty:
+                        st.info(f"No HMSI stock received at {all_branch_map.get(report_branch_id)} in this period.")
+                    else:
+                        st.dataframe(oem_df, use_container_width=True, hide_index=True)
+                        st.metric("Total New Stock Received", int(oem_df['Total_Received'].sum()))
 
-                history_df = mgr.get_transfer_history(db, target_branch_id, start_date, end_date)
-
-            if history_df.empty:
-                st.info("No transfers found for the selected criteria.")
-            else:
-                # --- Summary Metrics ---
-                total_moved = history_df['Quantity'].sum()
-                # Count unique days with activity
-                active_days = history_df['Date'].nunique()
-
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Total Vehicles Moved", int(total_moved))
-                m2.metric("Active Transfer Days", active_days)
-
-                st.divider()
-
-                # --- Detailed Table ---
-                st.subheader("Detailed Movement Log")
-
-                # Style the dataframe to highlight IN vs OUT
-                def highlight_direction(val):
-                    color = '#d4edda' if val == 'INWARD' else '#f8d7da' # Green for IN, Red for OUT
-                    return f'background-color: {color}'
-
-                st.dataframe(
-                    history_df.style.applymap(highlight_direction, subset=['Transaction_Type']),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=500
-                )
         except Exception as e:
-            st.error(f"Error loading transfer history: {e}")
+            st.error(f"Error generating report: {e}")
     
     elif selected_tab == "📥 OEM Inward":
         st.header(f"Stock Arrival at {current_head_name}")
