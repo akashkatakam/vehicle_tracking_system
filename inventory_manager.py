@@ -163,9 +163,70 @@ def get_transfer_history(db: Session, branch_id: str = None, start_date: date = 
         query = query.filter(models.InventoryTransaction.Date <= end_date)
 
     return pd.read_sql(query.statement, db.get_bind())
+
+def get_branch_transfer_summary(db: Session, from_branch_id: str, start_date: date, end_date: date) -> pd.DataFrame:
+    """
+    Summarizes transfers FROM a specific branch TO all other branches.
+    Grouping: Destination Branch -> Model -> Variant.
+    """
+    ToBranch = aliased(models.Branch)
+    
+    query = (
+        db.query(
+            ToBranch.Branch_Name.label("Destination_Branch"),
+            models.InventoryTransaction.Model,
+            models.InventoryTransaction.Variant,
+            models.InventoryTransaction.Color,
+            func.sum(models.InventoryTransaction.Quantity).label("Total_Quantity")
+        )
+        .join(ToBranch, models.InventoryTransaction.To_Branch_ID == ToBranch.Branch_ID)
+        .filter(
+            models.InventoryTransaction.Transaction_Type == TransactionType.OUTWARD_TRANSFER,
+            models.InventoryTransaction.Current_Branch_ID == from_branch_id, 
+            models.InventoryTransaction.Date >= start_date,
+            models.InventoryTransaction.Date <= end_date
+        )
+        .group_by(
+            ToBranch.Branch_Name, 
+            models.InventoryTransaction.Model, 
+            models.InventoryTransaction.Variant,
+            models.InventoryTransaction.Color
+        )
+        .order_by(ToBranch.Branch_Name, models.InventoryTransaction.Model)
+    )
+    
+    return pd.read_sql(query.statement, db.get_bind())
+
+def get_oem_inward_summary(db: Session, branch_id: str, start_date: date, end_date: date) -> pd.DataFrame:
+    """
+    Summarizes stock received from OEM (HMSI) for a specific branch.
+    Grouping: Model -> Variant.
+    """
+    query = (
+        db.query(
+            models.InventoryTransaction.Model,
+            models.InventoryTransaction.Variant,
+            models.InventoryTransaction.Color,
+            func.sum(models.InventoryTransaction.Quantity).label("Total_Received")
+        )
+        .filter(
+            models.InventoryTransaction.Transaction_Type == TransactionType.INWARD_OEM,
+            models.InventoryTransaction.Current_Branch_ID == branch_id,
+            models.InventoryTransaction.Date >= start_date,
+            models.InventoryTransaction.Date <= end_date,
+            models.InventoryTransaction.Source_External != 'OEM-BULK-IMPORT'
+        )
+        .group_by(
+            models.InventoryTransaction.Model, 
+            models.InventoryTransaction.Variant,
+            models.InventoryTransaction.Color
+        )
+        .order_by(models.InventoryTransaction.Model)
+    )
+    
+    return pd.read_sql(query.statement, db.get_bind())
 # --- WRITE FUNCTIONS (Existing) ---
 
-# --- MODIFIED: This function is now OBSOLETE for bulk inward.
 # Use log_bulk_inward_master instead.
 def log_oem_inward(db: Session, branch_id: str, model: str, var: str, color: str, qty: int, load_no: str, dt: date, rem: str):
     # This function is now secondary.
