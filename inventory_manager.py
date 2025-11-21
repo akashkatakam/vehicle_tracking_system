@@ -289,10 +289,56 @@ def log_sale(db: Session, branch_id: str, model: str, var: str, color: str, qty:
     ))
     db.commit()
     
-# --- OBSOLETE: Use log_bulk_transfer_master
-def log_bulk_sales(db: Session, branch_id: str, date_val: date, remarks: str, vehicle_batch: List[Dict]):
-    pass # This logic is now handled by the PDI/Mechanic scan
+def log_bulk_manual_sub_branch_sale(db: Session, chassis_list: List[str], sale_date: date, remarks: str):
+    """
+    Marks a list of vehicles as 'Sold' in the VehicleMaster table in a single 
+    atomic transaction and logs an InventoryTransaction.
+    """
+    if not chassis_list:
+        # It's good practice to raise an exception for an empty list
+        raise Exception("No vehicles in the batch to process.")
+        
+    try:
+        for chassis_no in chassis_list:
+            # 1. Find the vehicle
+            vehicle = db.query(models.VehicleMaster).filter(
+                models.VehicleMaster.chassis_no == chassis_no
+            ).first()
 
+            if not vehicle:
+                raise Exception(f"Vehicle {chassis_no} not found.")
+
+            if vehicle.status == 'Sold':
+                raise Exception(f"Vehicle {chassis_no} is already marked as 'Sold'.")
+
+            # Get the branch_id from the vehicle itself
+            branch_id = vehicle.current_branch_id
+
+            # 2. Update the VehicleMaster status
+            vehicle.status = 'Sold'
+            
+            # 3. Log the InventoryTransaction
+            sale_log = models.InventoryTransaction(
+                Date=sale_date,
+                Transaction_Type=models.TransactionType.SALE,
+                Current_Branch_ID=branch_id,
+                Model=vehicle.model,
+                Variant=vehicle.variant,
+                Color=vehicle.color,
+                Quantity=1,
+                Remarks=f"Manual Sub-Branch Sale. {remarks}"
+            )
+            db.add(sale_log)
+        
+        # 4. Commit all changes at once
+        db.commit()
+        return True, f"Success: {len(chassis_list)} vehicles marked as 'Sold'."
+
+    except Exception as e:
+        # If any error occurs (like a chassis not found), roll back everything
+        db.rollback()
+        return False, str(e)
+    
 # --- NEW: Bulk Inward for VehicleMaster ---
 def log_bulk_inward_master(db: Session, current_branch_id: str, source: str, load_no: str, date_val: date, remarks: str, vehicle_batch: List[Dict]):
     """
@@ -363,12 +409,6 @@ def log_bulk_transfer_master(db: Session, from_branch_id: str, to_branch_id: str
     except Exception as e:
         db.rollback()
         raise e
-    
-# --- OBSOLETE: Use log_bulk_inward_master ---
-def log_inward_stock(db: Session, current_branch_id: str, source: str, 
-                     model: str, variant: str, color: str, qty: int, 
-                     load_no: str, date_val: date, remarks: str):
-    pass # This logic is replaced by VehicleMaster entry
 
 def log_manual_sub_branch_sale(db: Session, chassis_no: str, sale_date: date, remarks: str):
     """

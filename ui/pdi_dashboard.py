@@ -49,7 +49,7 @@ def render_stock_view_interactive(initial_head_name=None, is_public=False, head_
             f"Filter {current_head_name} Territory by Branch:", 
             options=all_managed_names, 
             selection_mode="multi", 
-            default=all_managed_names,
+            default=None,
             key="stock_pills_priv"
         )
         
