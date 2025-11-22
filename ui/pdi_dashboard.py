@@ -193,17 +193,79 @@ def render():
     branch_id = st.session_state.inventory_branch_id
 
     # --- Sidebar Setup ---
+    is_super_owner = (branch_id is None) or (branch_id == "All Branches") # Assuming "All Branches" placeholder
+
+    # 1. Initialize session state for the actively managed Head Branch ID
+    if 'pdi_active_head_id' not in st.session_state:
+        # If Super Owner, start with the first head branch; otherwise, use their assigned branch
+        default_id = branch_id if branch_id else next(iter(head_map.values()))
+        st.session_state.pdi_active_head_id = default_id
+    
+    # --- Start Sidebar Content ---
     with st.sidebar:
         st.header("📍 Operational Setup")
-        current_head_name = st.selectbox("Select Head Branch:", options=head_map.keys())
-        current_head_id = head_map[current_head_name]
+
+        if is_super_owner:
+            # --- SUPER OWNER LOGIC ---
+            # Determine the current selection index
+            current_id = st.session_state.pdi_active_head_id
+            keys_list = list(head_map.keys())
+            
+            # Use safe lookup for default index
+            default_index = 0
+            for name, hid in head_map.items():
+                if hid == current_id:
+                    default_index = keys_list.index(name)
+                    break
+
+            selected_head_name = st.selectbox(
+                "Select Head Branch (Super User):",
+                options=keys_list,
+                index=default_index,
+                key="super_owner_head_selector"
+            )
+            
+            # Update the session variable when selection changes
+            current_head_id = head_map[selected_head_name]
+            st.session_state.pdi_active_head_id = current_head_id
+            current_head_name = selected_head_name
+            
+        else:
+            # --- BRANCH-SPECIFIC USER LOGIC ---
+            # User is locked to their assigned branch_id
+            current_head_id = branch_id
+            current_head_name = st.session_state.inventory_branch_name # Use the name we saved on login
+            
+            # Display their branch name as a locked field
+            st.text_input(
+                "Head Branch (Access Locked):", 
+                value=current_head_name, 
+                disabled=True
+            )
+            # Ensure the session variable tracks the locked ID
+            st.session_state.pdi_active_head_id = current_head_id
+
+
         st.divider()
         st.info(f"Managing: **{current_head_name}**")
+        
+        # --- Define variables for the rest of the dashboard (OUTSIDE the sidebar) ---
+        # NOTE: We define these variables AFTER the sidebar to ensure they are available
+        # to the rest of the app, regardless of the user type.
+        current_head_id = st.session_state.pdi_active_head_id
+        # Use the name corresponding to the ID, whether selected or locked
+        current_head_name = next((name for name, hid in head_map.items() if hid == current_head_id), "N/A")
         
         with SessionLocal() as db:
             managed_branches = mgr.get_managed_branches(db, current_head_id)
         managed_map = {b.Branch_Name: b.Branch_ID for b in managed_branches}
         sub_branch_map = {k: v for k, v in managed_map.items() if v != current_head_id}
+
+    is_akash_owner = (
+        st.session_state.get('inventory_user_role') == 'Owner' and
+        st.session_state.get('inventory_username') == 'akash'
+    )
+
 
     # --- Tabbed Interface ---
     tab_list = [
@@ -214,6 +276,8 @@ def render():
         "📤 Branch Transfer", 
         "📤 Sub-Branch Sale"
     ]
+    if is_akash_owner:
+        tab_list.append("🛠️ Stock Correction")
     
     selected_tab = st.radio(
         "Select View", 
@@ -538,3 +602,77 @@ def render():
                     except Exception as e:
                         st.error(f"An application error occurred: {e}")
     
+    elif selected_tab == "🛠️ Stock Correction":
+        # This check is crucial for security and prevents rendering
+        # if someone tries to access the URL query parameter manually.
+        if is_akash_owner: 
+            st.header("🛠️ Bulk Stock Correction")
+            st.warning("""
+                **WARNING:** This tool will overwrite Model, Variant, Color, and Branch ID in the VehicleMaster.
+                **Critical Rule:** Any vehicle with a transfer logged after **November 19, 2025** will be **SKIPPED**.
+            """)
+
+            # Set the fixed cutoff date
+            CUTOFF_DATE = date(2025, 11, 19)
+            CORRECTION_DATE = date.today()
+
+            with st.container(border=True):
+                st.info(f"Correction Date will be logged as: **{CORRECTION_DATE}**. Transfers after **{CUTOFF_DATE}** will be ignored.")
+                st.markdown("""
+                    **CSV Required Columns:**
+                    * `chassis_no` (mandatory for lookup)
+                    * `model` (corrected value)
+                    * `variant` (corrected value)
+                    * `color` (corrected value)
+                    * `current_branch_id` (corrected branch ID)
+                """)
+                
+            st.subheader("Upload Correction CSV")
+            uploaded_file = st.file_uploader(
+                "Choose a CSV file containing the corrected data.", 
+                type="csv", 
+                key="correction_csv"
+            )
+
+            if uploaded_file is not None:
+                # ... (rest of your bulk_correct_stock file reading and execution logic goes here) ...
+                try:
+                    df = pd.read_csv(uploaded_file, dtype=str)
+                    print(df.columns)
+                
+                    required_cols = ['chassis_no', 'model', 'variant', 'color', 'current_branch_id']
+                    missing_cols = [col for col in required_cols if col not in df.columns]
+                    
+                    if missing_cols:
+                        st.error(f"CSV is missing required columns: {', '.join(missing_cols)}")
+                    else:
+                        st.dataframe(df[['chassis_no', 'model', 'variant', 'current_branch_id']].head())
+                        update_batch = df[required_cols].to_dict('records')
+                        st.info(f"Ready to process {len(update_batch)} records.")
+                        
+                        if st.button("EXECUTE BULK CORRECTION", type="primary", use_container_width=True):
+                            with SessionLocal() as db:
+                                success, message, error_log = mgr.bulk_correct_stock(
+                                    db, 
+                                    update_batch, 
+                                    CORRECTION_DATE,
+                                    CUTOFF_DATE
+                                )
+                            
+                            if success:
+                                st.success(message)
+                                if error_log:
+                                    st.warning("See details of skipped vehicles and errors below:")
+                                    st.json(error_log)
+                                st.cache_data.clear()
+                                st.rerun()
+                            else:
+                                st.error(message)
+                                if error_log:
+                                    st.json(error_log)
+                
+                except Exception as e:
+                    st.error(f"An error occurred while processing the file: {e}")
+        else:
+             # This message should technically never be seen, but it's a good fallback
+             st.error("Access Denied: This tool is restricted to specific users.")

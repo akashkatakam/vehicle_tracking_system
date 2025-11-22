@@ -453,6 +453,87 @@ def log_manual_sub_branch_sale(db: Session, chassis_no: str, sale_date: date, re
     except Exception as e:
         db.rollback()
         return False, str(e)
+
+def bulk_correct_stock(db: Session, update_batch: List[Dict], correction_date: date, cutoff_date: date):
+    """
+    Corrects Model/Variant/Branch in VehicleMaster based on CSV data.
+    Skips correction if a transfer (INWARD/OUTWARD) has occurred after cutoff_date.
+    """
+    skip_count = 0
+    update_count = 0
+    error_log = []
+
+    try:
+        for item in update_batch:
+            chassis_no = item.get('chassis_no')
+            if not chassis_no:
+                error_log.append(f"Skipped row: Missing chassis_no.")
+                continue
+
+            # 1. Find the vehicle master record
+            vehicle = db.query(models.VehicleMaster).filter(
+                models.VehicleMaster.chassis_no == chassis_no
+            ).first()
+
+            if not vehicle:
+                error_log.append(f"Error: Chassis {chassis_no} not found in VehicleMaster.")
+                continue
+
+            # 2. Check for recent transfers (after cutoff_date)
+            # We look for ANY INWARD or OUTWARD transfer activity involving this vehicle's model/variant/color 
+            # and location after the cutoff date.
+            recent_transfer = db.query(models.InventoryTransaction).filter(
+                models.InventoryTransaction.Date >= cutoff_date,
+                models.InventoryTransaction.Transaction_Type.in_([
+                    models.TransactionType.INWARD_TRANSFER, 
+                    models.TransactionType.OUTWARD_TRANSFER
+                ]),
+                models.InventoryTransaction.Current_Branch_ID == vehicle.current_branch_id,
+                models.InventoryTransaction.Model == vehicle.model,
+                models.InventoryTransaction.Variant == vehicle.variant,
+            ).first()
+
+            if recent_transfer:
+                skip_count += 1
+                error_log.append(f"Skipped Chassis {chassis_no}: Found recent transfer ({recent_transfer.Transaction_Type}) on {recent_transfer.Date}.")
+                continue
+
+            # 3. Apply corrections only if not sold/allotted
+            if vehicle.status in ['Sold', 'Allotted']:
+                error_log.append(f"Skipped Chassis {chassis_no}: Status is '{vehicle.status}'. Correction not allowed.")
+                continue
+                
+            # --- Correction ---
+            original_branch_id = vehicle.current_branch_id
+            
+            # Update fields from CSV (using existing values as default if CSV field is missing)
+            # vehicle.model = item.get('model', vehicle.model)
+            # vehicle.variant = item.get('variant', vehicle.variant)
+            # vehicle.color = item.get('color', vehicle.color)
+            vehicle.current_branch_id = item.get('current_branch_id', vehicle.current_branch_id)
+            # vehicle.load_reference_number = item.get('load_reference_number',vehicle.load_reference_number)
+            
+            update_count += 1
+
+            # 4. Log a correction transaction for auditing (using the correction date)
+            db.add(models.InventoryTransaction(
+                Date=correction_date,
+                Transaction_Type="STOCK CORRECTION", # Custom transaction type for auditing
+                Current_Branch_ID=vehicle.current_branch_id,
+                From_Branch_ID=original_branch_id,
+                Model=vehicle.model,
+                Variant=vehicle.variant,
+                Color=vehicle.color,
+                Quantity=1,
+                Remarks=f"Data Correction: Updated model/variant/branch from CSV. Original Branch: {original_branch_id}."
+            ))
+
+        db.commit()
+        return True, f"Success: {update_count} vehicles corrected. {skip_count} skipped due to recent transfer/sale. {len(error_log)} errors logged.", error_log
+    
+    except Exception as e:
+        db.rollback()
+        return False, f"FATAL Database Error: {e}", error_log
 # ---
 # --- FUNCTIONS FOR SALES LIFECYCLE ---
 # ---
