@@ -176,6 +176,73 @@ def render_pdi_pending_tasks(branch_id: str =None):
     except Exception as e:
         st.error(f"Error loading pending tasks: {e}")
 
+@st.dialog("📊 Sales Report",width= 'large')
+def show_sales_report_popup(head_map):
+        st.write("Select a date range to generate the sales matrix.")
+        
+        # Default to "This Month"
+        today = date.today()
+        
+        date_range = st.date_input(
+            "Select Date Range",
+            value=(today, today),
+            max_value=today
+        )
+        
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            start_d, end_d = date_range
+            
+            if st.button(f"Generate Report ({start_d.strftime('%d-%b')} to {end_d.strftime('%d-%b')})", type="primary"):
+                try:
+                    with SessionLocal() as db:
+                        # 1. Fetch the Master Report (All Data)
+                        master_df = mgr.get_sales_report(db, start_d, end_d)
+                    
+                    if master_df.empty:
+                        st.warning("No sales recorded for this period.")
+                    else:
+                        st.write(f"### Sales Report: {start_d} to {end_d}")
+                        
+                        # 2. Iterate through each Head Branch (Territory)
+                        # head_map is available from the main render() scope
+                        for head_name, head_id in head_map.items():
+                            
+                            # Get all sub-branches for this territory
+                            with SessionLocal() as db:
+                                territory_branches = mgr.get_managed_branches(db, head_id)
+                            
+                            territory_names = [b.Branch_Name for b in territory_branches]
+                            
+                            # 3. Filter the Master Report for this Territory
+                            # (We check if the index 'Branch_Name' is in our list)
+                            territory_df = master_df[master_df.index.isin(territory_names)]
+                            
+                            # Only show the table if there is data
+                            if not territory_df.empty:
+                                st.divider()
+                                st.subheader(f"📍 {head_name}")
+                                st.dataframe(territory_df, use_container_width=True)
+                                
+                                # Show Territory Total
+                                t_total = territory_df['TOTAL'].sum()
+                                st.markdown(f"**Total {head_name} Sales: :green[{int(t_total)}]**")
+
+                        st.divider()
+                        
+                        # 4. Global Download Button
+                        csv = master_df.to_csv().encode('utf-8')
+                        st.download_button(
+                            "⬇️ Download Full Report (CSV)",
+                            csv,
+                            f"sales_report_{start_d}_{end_d}.csv",
+                            "text/csv",
+                            key='download-sales-popup'
+                        )
+
+                except Exception as e:
+                    st.error(f"Error loading report: {e}")
+        else:
+            st.info("Please select an end date.")
 
 # --- MAIN RENDER FUNCTION ---
 def render():
@@ -248,6 +315,9 @@ def render():
 
         st.divider()
         st.info(f"Managing: **{current_head_name}**")
+        if st.button("📊 View Daily Sales Report", type="primary", use_container_width=True):
+            show_sales_report_popup(head_map=head_map)
+
         
         # --- Define variables for the rest of the dashboard (OUTSIDE the sidebar) ---
         # NOTE: We define these variables AFTER the sidebar to ensure they are available
@@ -480,7 +550,7 @@ def render():
         else:
             with st.container(border=True):
                 c1, c2 = st.columns(2)
-                dest_name = c1.selectbox("Destination Branch:", options=sub_branch_map.keys())
+                dest_name = c1.selectbox("Destination Branch:", options=all_branch_map.keys())
                 date_out = c2.date_input("Transfer Date:", value=date.today())
                 remarks_out = st.text_input("Transfer Remarks:")
             

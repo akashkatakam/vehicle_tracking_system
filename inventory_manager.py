@@ -225,6 +225,53 @@ def get_oem_inward_summary(db: Session, branch_id: str, start_date: date, end_da
     )
     
     return pd.read_sql(query.statement, db.get_bind())
+
+def get_sales_report(db: Session, start_date: date, end_date: date) -> pd.DataFrame:
+    """
+    Generates a matrix of Sales for a specific date range.
+    Rows: Branch Names
+    Columns: Models
+    Values: Quantity Sold
+    """
+    BranchAlias = aliased(models.Branch)
+    
+    # Query TransactionType.SALE within the date range
+    query = (
+        db.query(
+            BranchAlias.Branch_Name,
+            models.InventoryTransaction.Model,
+            func.sum(models.InventoryTransaction.Quantity).label("Total_Sold")
+        )
+        .join(BranchAlias, models.InventoryTransaction.Current_Branch_ID == BranchAlias.Branch_ID)
+        .filter(
+            models.InventoryTransaction.Transaction_Type == models.TransactionType.SALE,
+            models.InventoryTransaction.Date >= start_date,
+            models.InventoryTransaction.Date <= end_date
+        )
+        .group_by(BranchAlias.Branch_Name, models.InventoryTransaction.Model)
+    )
+    
+    df = pd.read_sql(query.statement, db.get_bind())
+    
+    if df.empty:
+        return pd.DataFrame()
+        
+    # Pivot the data: Branch (Rows) x Model (Columns)
+    pivot_df = df.pivot_table(
+        index='Branch_Name', 
+        columns='Model', 
+        values='Total_Sold', 
+        aggfunc='sum', 
+        fill_value=0
+    )
+    
+    # Add a 'Total' column for each branch
+    pivot_df['TOTAL'] = pivot_df.sum(axis=1)
+    
+    # Sort by Total descending
+    pivot_df = pivot_df.sort_values(by='TOTAL', ascending=False)
+    
+    return pivot_df
 # --- WRITE FUNCTIONS (Existing) ---
 
 # Use log_bulk_inward_master instead.
