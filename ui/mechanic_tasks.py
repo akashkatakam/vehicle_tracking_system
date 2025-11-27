@@ -40,16 +40,6 @@ def render():
             
             st.divider()
             st.subheader("Scan Vehicle Details")
-            st.markdown(
-            """
-            <style>
-            iframe[title="streamlit_qrcode_scanner.qrcode_scanner"] {
-                min-height: 140px;
-            }
-            </style>
-            """, 
-            unsafe_allow_html=True
-        )
 
             chassis_scan_val = qrcode_scanner(key="chassis_scanner")
             if chassis_scan_val:
