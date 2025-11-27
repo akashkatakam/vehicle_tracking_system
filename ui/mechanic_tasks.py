@@ -44,7 +44,7 @@ def render():
             """
             <style>
             iframe[title="streamlit_qrcode_scanner.qrcode_scanner"] {
-                min-height: 300px;
+                min-height: 140px;
             }
             </style>
             """, 
