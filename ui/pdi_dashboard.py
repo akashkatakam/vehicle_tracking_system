@@ -598,17 +598,20 @@ def render():
         if 'manual_sale_batch' not in st.session_state:
             st.session_state.manual_sale_batch = []
         if 'scanned_chassis_manual_sale' not in st.session_state:
-            st.session_state.scanned_chassis_manual_sale = ""
+            st.session_state.manual_sale_chassis = ""
 
         # --- Section 1: Add Vehicle to Batch ---
         st.subheader("Add Vehicle to Sale Batch")
         chassis_scan_val = qrcode_scanner(key="manual_sale_scanner")
+        
+        # 2. If a code is scanned, force-update the text_input's key directly
         if chassis_scan_val:
-            st.session_state.scanned_chassis_manual_sale = chassis_scan_val
+            st.session_state.manual_sale_chassis = chassis_scan_val
 
+        # 3. Render the text input
+        # Note: We don't need 'value=' anymore because we set the key above
         chassis_val = st.text_input(
             "Chassis Number:", 
-            value=st.session_state.get("scanned_chassis_manual_sale", ""), 
             key="manual_sale_chassis"
         )
         
@@ -619,7 +622,7 @@ def render():
                 st.warning(f"{chassis_val} is already in the batch.")
             else:
                 st.session_state.manual_sale_batch.append(chassis_val)
-                st.session_state.scanned_chassis_manual_sale = "" # Clear for next scan
+                st.session_state.manual_sale_chassis = "" # Clear for next scan
                 st.success(f"Added {chassis_val} to batch.")
                 st.rerun()
 
