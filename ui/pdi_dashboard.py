@@ -583,7 +583,7 @@ def render():
                 if c2.button("✅ Submit Batch", key="transfer_submit", type="primary", use_container_width=True):
                     try:
                         with SessionLocal() as db:
-                            mgr.log_bulk_transfer_master(db, current_head_id, sub_branch_map[dest_name], date_out, remarks_out, st.session_state.transfer_batch)
+                            mgr.log_bulk_transfer_master(db, current_head_id, all_branch_map[dest_name], date_out, remarks_out, st.session_state.transfer_batch)
                         st.success(f"Transferred {len(st.session_state.transfer_batch)} vehicles!")
                         st.session_state.transfer_batch = []
                         st.cache_data.clear()
