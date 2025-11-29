@@ -6,7 +6,6 @@ from database import SessionLocal
 import inventory_manager as mgr
 import models
 from streamlit_qrcode_scanner import qrcode_scanner
-from utils.qr_utils import decode_qr_image
 
 from ui.color_code import COLOR_CODE_MAP
 
@@ -313,6 +312,7 @@ def render():
             # Ensure the session variable tracks the locked ID
             st.session_state.pdi_active_head_id = current_head_id
 
+
         st.divider()
         st.info(f"Managing: **{current_head_name}**")
         if st.button("📊 View Daily Sales Report", type="primary", use_container_width=True):
@@ -555,18 +555,10 @@ def render():
                 remarks_out = st.text_input("Transfer Remarks:")
             
             st.subheader("Add Vehicle to Transfer Batch")
-            img_file_buffer = st.camera_input("Take a photo of the QR Code", key="transfer_cam")
+            chassis_scan_val = qrcode_scanner(key="transfer_scanner")
+            if chassis_scan_val:
+                st.session_state.scanned_chassis = chassis_scan_val
 
-            if img_file_buffer is not None:
-                # Decode the image
-                scanned_code = decode_qr_image(img_file_buffer)
-                if scanned_code:
-                    st.session_state.scanned_chassis = scanned_code
-                    st.success(f"Scanned: {scanned_code}")
-                else:
-                    st.warning("No QR code detected. Try getting closer.")
-
-        # Text Input (Manual Override)
             chassis_val = st.text_input(
                 "Chassis Number:", 
                 value=st.session_state.get("scanned_chassis", ""), 
@@ -610,15 +602,12 @@ def render():
 
         # --- Section 1: Add Vehicle to Batch ---
         st.subheader("Add Vehicle to Sale Batch")
-        img_file_buffer = st.camera_input("Take a photo of the QR Code", key="manual_sale_cam")
+        chassis_scan_val = qrcode_scanner(key="manual_sale_scanner")
+        
+        # 2. If a code is scanned, force-update the text_input's key directly
+        if chassis_scan_val:
+            st.session_state.manual_sale_chassis = chassis_scan_val
 
-        if img_file_buffer is not None:
-            scanned_code = decode_qr_image(img_file_buffer)
-            if scanned_code:
-                st.session_state.manual_sale_chassis = scanned_code
-                st.success(f"Scanned: {scanned_code}")
-            else:
-                st.warning("No QR code detected. Try getting closer.")
         # 3. Render the text input
         # Note: We don't need 'value=' anymore because we set the key above
         chassis_val = st.text_input(

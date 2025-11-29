@@ -5,4 +5,3 @@ reportlab
 pandas
 streamlit-qrcode-scanner
 extra-streamlit-components
-opencv-python-headless
