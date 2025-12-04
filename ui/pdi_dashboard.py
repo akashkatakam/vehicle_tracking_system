@@ -552,7 +552,7 @@ def render():
                 c1, c2 = st.columns(2)
                 dest_name = c1.selectbox("Destination Branch:", options=all_branch_map.keys())
                 date_out = c2.date_input("Transfer Date:", value=date.today())
-                remarks_out = st.text_input("Transfer Remarks:")
+                remarks_out = st.text_input("Transfer DC Number:")
             
             st.subheader("Add Vehicle to Transfer Batch")
             chassis_scan_val = qrcode_scanner(key="transfer_scanner")
@@ -647,7 +647,7 @@ def render():
         with st.container(border=True):
             c1, c2 = st.columns(2)
             sale_date = c1.date_input("Date of Sale (for all)", value=date.today())
-            remarks = c2.text_input("DC Number")
+            remarks = c2.text_input("Remarks Eg: Branch name(Sathupalli, Thallada, etc.)")
             
             if st.button("Submit Sale", type="primary", use_container_width=True):
                 batch_to_submit = st.session_state.manual_sale_batch

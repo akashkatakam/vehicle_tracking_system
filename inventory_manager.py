@@ -351,7 +351,6 @@ def log_bulk_manual_sub_branch_sale(db: Session, chassis_list: List[str], sale_d
 
             # 2. Update the VehicleMaster status
             vehicle.status = 'Sold'
-            vehicle.dc_number = remarks
             
             # 3. Log the InventoryTransaction
             sale_log = models.InventoryTransaction(
@@ -427,6 +426,7 @@ def log_bulk_transfer_master(db: Session, from_branch_id: str, to_branch_id: str
                 raise Exception(f"Vehicle {chassis_no} not found, not 'In Stock', or not at branch {from_branch_id}.")
             
             vehicle.current_branch_id = to_branch_id
+            vehicle.dc_number = remarks
             
             # 2. Log the transactions (double-entry)
             db.add(models.InventoryTransaction(
