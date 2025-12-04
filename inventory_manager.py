@@ -3,7 +3,6 @@ from sqlalchemy.orm import Session, aliased
 from sqlalchemy import func, case, and_, or_
 import pandas as pd
 from datetime import date, datetime, timedelta
-# --- UPDATED: Import all models from the new merged file ---
 import models
 from models import IST_TIMEZONE, TransactionType
 
@@ -325,17 +324,6 @@ def log_transfer(db: Session, from_id: str, to_id: str, chassis_no: str, dt: dat
         raise e
 
 # --- MODIFIED: This function is now OBSOLETE.
-# Sales are logged by the mechanic's scan linking to a SalesRecord.
-def log_sale(db: Session, branch_id: str, model: str, var: str, color: str, qty: int, dt: date, rem: str):
-    # This is now a simple log. The VehicleMaster status change is the real event.
-    db.add(models.InventoryTransaction(
-        Date=dt, Transaction_Type=TransactionType.SALE,
-        Current_Branch_ID=branch_id,
-        Model=model, Variant=var, Color=color, Quantity=qty,
-        Remarks=rem
-    ))
-    db.commit()
-    
 def log_bulk_manual_sub_branch_sale(db: Session, chassis_list: List[str], sale_date: date, remarks: str):
     """
     Marks a list of vehicles as 'Sold' in the VehicleMaster table in a single 
@@ -363,6 +351,7 @@ def log_bulk_manual_sub_branch_sale(db: Session, chassis_list: List[str], sale_d
 
             # 2. Update the VehicleMaster status
             vehicle.status = 'Sold'
+            vehicle.dc_number = remarks
             
             # 3. Log the InventoryTransaction
             sale_log = models.InventoryTransaction(
@@ -456,50 +445,6 @@ def log_bulk_transfer_master(db: Session, from_branch_id: str, to_branch_id: str
     except Exception as e:
         db.rollback()
         raise e
-
-def log_manual_sub_branch_sale(db: Session, chassis_no: str, sale_date: date, remarks: str):
-    """
-    Marks a vehicle as 'Sold' without a SalesRecord.
-    This is for manual sales at sub-branches.
-    """
-    try:
-        # 1. Find the vehicle
-        vehicle = db.query(models.VehicleMaster).filter(
-            models.VehicleMaster.chassis_no == chassis_no
-        ).first()
-
-        if not vehicle:
-            raise Exception(f"Vehicle {chassis_no} not found.")
-
-        if vehicle.status == 'Sold':
-            raise Exception(f"Vehicle {chassis_no} is already marked as 'Sold'.")
-
-        # Get the branch_id from the vehicle itself
-        branch_id = vehicle.current_branch_id
-
-        # 2. Update the VehicleMaster status
-        vehicle.status = 'Sold'
-        
-        # 3. Log the transaction for reporting
-        sale_log = models.InventoryTransaction(
-            Date=sale_date,
-            Transaction_Type=TransactionType.SALE, # Use the 'Sale' transaction type
-            Current_Branch_ID=branch_id,
-            Model=vehicle.model,
-            Variant=vehicle.variant,
-            Color=vehicle.color,
-            Quantity=1,
-            Remarks=f"Manual Sub-Branch Sale. {remarks}"
-        )
-        db.add(sale_log)
-        
-        # 4. Commit the changes
-        db.commit()
-        return True, f"Success: Vehicle {chassis_no} marked as 'Sold'."
-
-    except Exception as e:
-        db.rollback()
-        return False, str(e)
 
 def bulk_correct_stock(db: Session, update_batch: List[Dict], correction_date: date, cutoff_date: date):
     """

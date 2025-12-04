@@ -611,9 +611,10 @@ def render():
         # 3. Render the text input
         # Note: We don't need 'value=' anymore because we set the key above
         chassis_val = st.text_input(
-            "Chassis Number:", 
-            key="manual_sale_chassis"
-        )
+                "Chassis Number:", 
+                value=st.session_state.get("manual_sale_chassis", ""), 
+                placeholder="Click Scan button or type Chassis No."
+            )
         
         if st.button("⬇️ Add to Sale Batch"):
             if not chassis_val:
@@ -646,9 +647,9 @@ def render():
         with st.container(border=True):
             c1, c2 = st.columns(2)
             sale_date = c1.date_input("Date of Sale (for all)", value=date.today())
-            remarks = c2.text_input("Remarks (for all, e.g., 'Sold at Warangal branch')")
+            remarks = c2.text_input("DC Number")
             
-            if st.button("Submit ENTIRE Batch as SOLD", type="primary", use_container_width=True):
+            if st.button("Submit Sale", type="primary", use_container_width=True):
                 batch_to_submit = st.session_state.manual_sale_batch
                 
                 if not batch_to_submit:
