@@ -229,7 +229,7 @@ def get_sales_report(db: Session, start_date: date, end_date: date) -> pd.DataFr
     """
     Generates a matrix of Sales for a specific date range.
     Rows: Branch Names
-    Columns: Models
+    Columns: Model + Variant
     Values: Quantity Sold
     """
     BranchAlias = aliased(models.Branch)
@@ -239,6 +239,7 @@ def get_sales_report(db: Session, start_date: date, end_date: date) -> pd.DataFr
         db.query(
             BranchAlias.Branch_Name,
             models.InventoryTransaction.Model,
+            models.InventoryTransaction.Variant,  # <--- Added Variant
             func.sum(models.InventoryTransaction.Quantity).label("Total_Sold")
         )
         .join(BranchAlias, models.InventoryTransaction.Current_Branch_ID == BranchAlias.Branch_ID)
@@ -247,7 +248,11 @@ def get_sales_report(db: Session, start_date: date, end_date: date) -> pd.DataFr
             models.InventoryTransaction.Date >= start_date,
             models.InventoryTransaction.Date <= end_date
         )
-        .group_by(BranchAlias.Branch_Name, models.InventoryTransaction.Model)
+        .group_by(
+            BranchAlias.Branch_Name, 
+            models.InventoryTransaction.Model, 
+            models.InventoryTransaction.Variant # <--- Added Variant to Group By
+        )
     )
     
     df = pd.read_sql(query.statement, db.get_bind())
@@ -255,16 +260,16 @@ def get_sales_report(db: Session, start_date: date, end_date: date) -> pd.DataFr
     if df.empty:
         return pd.DataFrame()
         
-    # Pivot the data: Branch (Rows) x Model (Columns)
+    # Pivot: Branch (Rows) x [Model, Variant] (Columns)
     pivot_df = df.pivot_table(
         index='Branch_Name', 
-        columns='Model', 
+        columns=['Model', 'Variant'],  # <--- Group columns by Model then Variant
         values='Total_Sold', 
         aggfunc='sum', 
         fill_value=0
     )
     
-    # Add a 'Total' column for each branch
+    # Add a 'TOTAL' column (Sum across all columns)
     pivot_df['TOTAL'] = pivot_df.sum(axis=1)
     
     # Sort by Total descending
