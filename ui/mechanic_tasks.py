@@ -2,7 +2,7 @@
 import streamlit as st
 import pandas as pd
 from database import SessionLocal
-import inventory_manager as mgr
+from services import sales_service
 from streamlit_qrcode_scanner import qrcode_scanner
 
 def render():
@@ -17,7 +17,7 @@ def render():
     my_tasks = pd.DataFrame()
     try:
         with SessionLocal() as db:
-            my_tasks = mgr.get_sales_records_for_mechanic(db, username, branch_id=branch_id)
+            my_tasks = sales_service.get_sales_records_for_mechanic(db, username, branch_id=branch_id)
         
         if my_tasks.empty:
             st.success("No pending tasks. Great job!")

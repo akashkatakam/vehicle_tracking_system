@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 from datetime import date
 from database import SessionLocal
-import inventory_manager as mgr
+from services import stock_service, sales_service, branch_service, report_service, email_import_service
 import models
 from streamlit_qrcode_scanner import qrcode_scanner
 
@@ -14,10 +14,9 @@ def load_config_data():
     """Loads branches and vehicle master data once."""
     with SessionLocal() as db:
         try:
-            all_branches = mgr.get_all_branches(db)
-            head_branches = mgr.get_head_branches(db)
-            vehicle_master = mgr.get_vehicle_master_data(db)
-            # --- IMPROVEMENT: Load color map from DB ---
+            all_branches = branch_service.get_all_branches(db)
+            head_branches = branch_service.get_head_branches(db)
+            vehicle_master = stock_service.get_vehicle_master_data(db)
             color_map = COLOR_CODE_MAP
             return all_branches, head_branches, vehicle_master, color_map
         except Exception as e:
@@ -28,7 +27,7 @@ def load_config_data():
 def render_stock_view_interactive(initial_head_name=None, is_public=False, head_map_global={}):
     try:
         if is_public:
-            head_map_local = {b.Branch_Name: b.Branch_ID for b in mgr.get_head_branches(SessionLocal())}
+            head_map_local = {b.Branch_Name: b.Branch_ID for b in branch_service.get_head_branches(SessionLocal())}
             current_head_name = st.selectbox("Select Territory (Head Branch):", options=head_map_local.keys())
             current_head_id = head_map_local[current_head_name]
         else:
@@ -41,7 +40,7 @@ def render_stock_view_interactive(initial_head_name=None, is_public=False, head_
         st.divider()
         
         with SessionLocal() as db:
-            managed_branches = mgr.get_managed_branches(db, current_head_id)
+            managed_branches = branch_service.get_managed_branches(db, current_head_id)
         managed_map_local = {b.Branch_Name: b.Branch_ID for b in managed_branches}
         all_managed_names = list(managed_map_local.keys())
 
@@ -64,7 +63,7 @@ def render_stock_view_interactive(initial_head_name=None, is_public=False, head_
         selected_ids = [managed_map_local[name] for name in selected_branches]
         
         # --- IMPROVEMENT: Call the cached stock function ---
-        raw_stock_df = mgr.get_multi_branch_stock(db=db,branch_ids=selected_ids)
+        raw_stock_df = stock_service.get_multi_branch_stock(db=db,branch_ids=selected_ids)
         
         if raw_stock_df.empty:
                 st.info("Zero stock recorded across selected branches.")
@@ -110,8 +109,8 @@ def render_pdi_assignment_view(branch_id=None):
     st.header("PDI Task Assignment")
     try:
         with SessionLocal() as db:
-            pending_pdi_data = mgr.get_sales_records_by_status(db, "PDI Pending", branch_id=branch_id)
-            mechanics = mgr.get_users_by_role(db, "Mechanic")
+            pending_pdi_data = sales_service.get_sales_records_by_status(db, "PDI Pending", branch_id=branch_id)
+            mechanics = branch_service.get_users_by_role(db, "Mechanic")
             
         if pending_pdi_data.empty:
             st.info("No sales are currently pending PDI assignment.")
@@ -148,7 +147,7 @@ def render_pdi_assignment_view(branch_id=None):
                     
                     try:
                         with SessionLocal() as db:
-                            mgr.assign_pdi_mechanic(db, int(sale_id), selected_mechanic)
+                            sales_service.assign_pdi_mechanic(db, int(sale_id), selected_mechanic)
                         st.success(f"Task assigned to {selected_mechanic}!")
                         st.cache_data.clear()
                         st.rerun()
@@ -167,7 +166,7 @@ def render_pdi_assignment_view(branch_id=None):
 def render_pdi_pending_tasks(branch_id: str =None):
     try:
         with SessionLocal() as db:
-            my_tasks = mgr.get_sales_records_by_status(db, "PDI In Progress", branch_id=branch_id)
+            my_tasks = sales_service.get_sales_records_by_status(db, "PDI In Progress", branch_id=branch_id)
         st.header("All In-Progress PDI Tasks")
         if my_tasks.empty:
             st.info("No tasks are currently in progress.")
@@ -198,13 +197,13 @@ def show_sales_report_popup(head_map):
                     with SessionLocal() as db:
                         # --- PART 1: SALES REPORT ---
                         st.subheader("💰 Sales Summary")
-                        master_sales_df = mgr.get_sales_report(db, start_d, end_d)
+                        master_sales_df = report_service.get_sales_report(db, start_d, end_d)
                     
                         if master_sales_df.empty:
                             st.info("No sales recorded for this period.")
                         else:
                             for head_name, head_id in head_map.items():
-                                territory_branches = mgr.get_managed_branches(db, head_id)
+                                territory_branches =  branch_service.get_managed_branches(db, head_id)
                                 territory_names = [b.Branch_Name for b in territory_branches]
                                 
                                 territory_sales = master_sales_df[master_sales_df.index.isin(territory_names)]
@@ -222,7 +221,7 @@ def show_sales_report_popup(head_map):
                         has_transfers = False
                         
                         for head_name, head_id in head_map.items():
-                            transfer_df = mgr.get_branch_transfer_summary(db, head_id, start_d, end_d)
+                            transfer_df = report_service.get_branch_transfer_summary(db, head_id, start_d, end_d)
                             
                             if not transfer_df.empty:
                                 has_transfers = True
@@ -332,7 +331,7 @@ def render():
         current_head_name = next((name for name, hid in head_map.items() if hid == current_head_id), "N/A")
         
         with SessionLocal() as db:
-            managed_branches = mgr.get_managed_branches(db, current_head_id)
+            managed_branches = branch_service.get_managed_branches(db, current_head_id)
         managed_map = {b.Branch_Name: b.Branch_ID for b in managed_branches}
         sub_branch_map = {k: v for k, v in managed_map.items() if v != current_head_id}
 
@@ -371,7 +370,7 @@ def render():
         
         try:
             with SessionLocal() as db:
-                completed_df = mgr.get_completed_sales_last_48h(db, branch_id=branch_id)
+                completed_df = sales_service.get_completed_sales_last_48h(db, branch_id=branch_id)
             
             if completed_df.empty:
                 st.info("No vehicles have completed PDI in the last 48 hours.")
@@ -407,6 +406,27 @@ def render():
     elif selected_tab == "📊 Stock View":
         st.header("Operational Stock View")
         render_stock_view_interactive(initial_head_name=current_head_name, is_public=False, head_map_global=head_map)
+        st.divider()
+        st.subheader("⏳ Inventory Aging")
+
+        with SessionLocal() as db:
+            # Use the new service
+            aging_df = report_service.get_stock_aging_report(db, branch_id=current_head_id)
+
+        if not aging_df.empty:
+            st.warning(f"Found {len(aging_df[aging_df['Days_Old'] > 90])} vehicles older than 90 days.")
+
+            # Show pivot table: Model vs Age Bucket
+            pivot_aging = aging_df.pivot_table(
+                index='model',
+                columns='Age_Bucket',
+                values='chassis_no',
+                aggfunc='count',
+                fill_value=0
+            )
+            st.dataframe(pivot_aging, use_container_width=True)
+        else:
+            st.success("No aging stock found!")
         
         st.header("Vehicle Movement Reports")
         
@@ -445,7 +465,7 @@ def render():
                 if report_type == "Summary: Outward (Head -> Branches)":
                     st.subheader(f"📤 Outward Summary: From {current_head_name}")
                     # Use current_head_id directly
-                    summary_df = mgr.get_branch_transfer_summary(db, current_head_id, start_date, end_date)
+                    summary_df = report_service.get_branch_transfer_summary(db, current_head_id, start_date, end_date)
                     
                     if summary_df.empty:
                         st.info(f"No vehicles sent from {current_head_name} in this period.")
@@ -465,7 +485,7 @@ def render():
                 # REPORT 2: OEM Inward (HMSI -> Branch)
                 elif report_type == "Summary: OEM Inward (HMSI)":
                     st.subheader(f"📥 OEM Inward Summary: {all_branch_map.get(report_branch_id)}")
-                    oem_df = mgr.get_oem_inward_summary(db, report_branch_id, start_date, end_date)
+                    oem_df = report_service.get_oem_inward_summary(db, report_branch_id, start_date, end_date)
                     
                     if oem_df.empty:
                         st.info(f"No HMSI stock received at {all_branch_map.get(report_branch_id)} in this period.")
@@ -478,7 +498,60 @@ def render():
     
     elif selected_tab == "📥 OEM Inward":
         st.header(f"Stock Arrival at {current_head_name}")
-        st.info("Upload a CSV file to add new vehicles to the VehicleMaster.")
+        # with st.expander("🤖 Auto-Import from Email (Daily Check)", expanded=True):
+        #     st.info("Checks configured email for the latest S08 file.")
+        #
+        #     if st.button("🔄 Fetch & Process Latest Email"):
+        #         with st.spinner("Connecting to Email Server..."):
+        #             raw_content, status_msg = email_import_service.fetch_latest_s08_email()
+        #
+        #         if raw_content:
+        #             st.success(status_msg)
+        #             # 1. Parse
+        #             batch_data = email_import_service.parse_s08_content(raw_content)
+        #
+        #             if batch_data:
+        #                 # 2. Convert to DataFrame for processing
+        #                 df_preview = pd.DataFrame(batch_data)
+        #
+        #                 # 3. Apply Color Mapping (Code -> Name)
+        #                 # We create a new column 'color_code' to keep reference, and map 'color'
+        #                 df_preview['color_code'] = df_preview['color']
+        #                 df_preview['color'] = df_preview['color_code'].map(COLOR_CODE_MAP).fillna(
+        #                     df_preview['color_code'])
+        #
+        #                 # Show result
+        #                 st.write(f"**Found {len(df_preview)} vehicles.**")
+        #                 st.dataframe(df_preview, use_container_width=True)
+        #
+        #                 # Store in session state for the confirmation step
+        #                 st.session_state['auto_import_batch'] = df_preview.to_dict('records')
+        #             else:
+        #                 st.warning("File found, but no vehicle records could be parsed.")
+        #         else:
+        #             st.error(status_msg)
+        #
+        #     # Confirmation Step
+        #     if st.session_state.get('auto_import_batch'):
+        #         if st.button("✅ Confirm & Save to Database", type="primary"):
+        #             try:
+        #                 with SessionLocal() as db:
+        #                     stock_service.log_bulk_inward_master(
+        #                         db,
+        #                         current_head_id,
+        #                         "HMSI (Email Auto)",
+        #                         "AUTO-S08",
+        #                         date.today(),
+        #                         "Auto-imported from S08",
+        #                         st.session_state['auto_import_batch']
+        #                     )
+        #                 st.success("Batch successfully saved!")
+        #                 del st.session_state['auto_import_batch']  # Clear after save
+        #                 st.cache_data.clear()
+        #             except Exception as e:
+        #                 st.error(f"Save Error: {e}")
+        st.divider()
+        st.info("Or Upload CSV Manually below...")
         
         with st.container(border=True):
             c1, c2 = st.columns(2)
@@ -538,7 +611,7 @@ def render():
                             else:
                                 # All good, submit the batch
                                 with SessionLocal() as db:
-                                    mgr.log_bulk_inward_master(db, current_head_id, source_in_name, load_no_fallback, date_in_fallback, remarks_in, vehicle_batch)
+                                    stock_service.log_bulk_inward_master(db, current_head_id, source_in_name, load_no_fallback, date_in_fallback, remarks_in, vehicle_batch)
                                 st.success(f"Successfully logged {len(vehicle_batch)} new vehicles!")
                                 st.cache_data.clear() 
                                 st.rerun()
@@ -588,7 +661,7 @@ def render():
                 if c2.button("✅ Submit Batch", key="transfer_submit", type="primary", use_container_width=True):
                     try:
                         with SessionLocal() as db:
-                            mgr.log_bulk_transfer_master(db, current_head_id, all_branch_map[dest_name], date_out, remarks_out, st.session_state.transfer_batch)
+                            stock_service.log_bulk_transfer_master(db, current_head_id, all_branch_map[dest_name], date_out, remarks_out, st.session_state.transfer_batch)
                         st.success(f"Transferred {len(st.session_state.transfer_batch)} vehicles!")
                         st.session_state.transfer_batch = []
                         st.cache_data.clear()
@@ -664,7 +737,7 @@ def render():
                 else:
                     try:
                         with SessionLocal() as db:
-                            success, message = mgr.log_bulk_manual_sub_branch_sale(
+                            success, message = stock_service.log_bulk_manual_sub_branch_sale(
                                 db, 
                                 chassis_list=batch_to_submit, 
                                 sale_date=sale_date, 
@@ -731,7 +804,7 @@ def render():
                         
                         if st.button("EXECUTE BULK CORRECTION", type="primary", use_container_width=True):
                             with SessionLocal() as db:
-                                success, message, error_log = mgr.bulk_correct_stock(
+                                success, message, error_log = stock_service.bulk_correct_stock(
                                     db, 
                                     update_batch, 
                                     CORRECTION_DATE,
