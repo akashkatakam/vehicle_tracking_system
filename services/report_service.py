@@ -26,28 +26,22 @@ def get_stock_aging_report(db: Session, branch_id: str = None) -> pd.DataFrame:
 
     if df.empty: return pd.DataFrame()
 
-    # --- FIX START: Handle Timezones ---
     now = datetime.now(IST_TIMEZONE)
-
-    # Ensure it's a datetime object
     df['date_received'] = pd.to_datetime(df['date_received'])
 
-    # Check if the column is timezone-naive. If so, localize it to IST.
     if df['date_received'].dt.tz is None:
         df['date_received'] = df['date_received'].dt.tz_localize(IST_TIMEZONE)
     else:
-        # If it somehow has a timezone (e.g. UTC), convert it to IST
         df['date_received'] = df['date_received'].dt.tz_convert(IST_TIMEZONE)
-    # --- FIX END ---
 
     df['Days_Old'] = (now - df['date_received']).dt.days
 
-    # Buckets
     bins = [0, 30, 60, 90, 9999]
     labels = ['0-30 Days', '31-60 Days', '61-90 Days', '90+ Days (Critical)']
     df['Age_Bucket'] = pd.cut(df['Days_Old'], bins=bins, labels=labels, right=False)
 
     return df
+
 
 def get_branch_transfer_summary(db: Session, from_branch_id: str, start_date: date, end_date: date) -> pd.DataFrame:
     ToBranch = aliased(models.Branch)
@@ -86,11 +80,12 @@ def get_oem_inward_summary(db: Session, branch_id: str, start_date: date, end_da
             models.InventoryTransaction.Date >= start_date,
             models.InventoryTransaction.Date <= end_date
         )
-        .group_by(models.InventoryTransaction.Model, models.InventoryTransaction.Variant, models.InventoryTransaction.Color)
-        # --- ORDER BY ADDED HERE ---
+        .group_by(models.InventoryTransaction.Model, models.InventoryTransaction.Variant,
+                  models.InventoryTransaction.Color)
         .order_by(models.InventoryTransaction.Model, models.InventoryTransaction.Variant)
     )
     return pd.read_sql(query.statement, db.get_bind())
+
 
 def get_sales_report(db: Session, start_date: date, end_date: date) -> pd.DataFrame:
     BranchAlias = aliased(models.Branch)
@@ -117,3 +112,25 @@ def get_sales_report(db: Session, start_date: date, end_date: date) -> pd.DataFr
                               fill_value=0)
     pivot_df['TOTAL'] = pivot_df.sum(axis=1)
     return pivot_df.sort_values(by='TOTAL', ascending=False)
+
+
+def get_daily_summary(db: Session, date_val: date) -> pd.DataFrame:
+    """Returns a summary of Sales and Transfers for the given date, grouped by Branch."""
+    query = (
+        db.query(
+            models.Branch.Branch_Name,
+            models.InventoryTransaction.Transaction_Type,
+            func.count(models.InventoryTransaction.id).label("Count")
+        )
+        .join(models.Branch, models.InventoryTransaction.Current_Branch_ID == models.Branch.Branch_ID)
+        .filter(
+            models.InventoryTransaction.Date == date_val,
+            models.InventoryTransaction.Transaction_Type.in_([
+                models.TransactionType.SALE,
+                models.TransactionType.OUTWARD_TRANSFER
+            ])
+        )
+        .group_by(models.Branch.Branch_Name, models.InventoryTransaction.Transaction_Type)
+    )
+
+    return pd.read_sql(query.statement, db.get_bind())

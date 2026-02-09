@@ -25,7 +25,69 @@ def load_config_data():
             return [], [], {}
 
 
-# --- 2. UX HELPERS ---
+# --- 2. REPORT DIALOG (POPUP) ---
+@st.dialog("📊 Detailed Sales & Transfers")
+def show_daily_report_dialog(start_d, end_d, head_map):
+    """
+    Renders the Sales and Transfer report in a modal popup.
+    """
+    st.write(f"**Period:** {start_d.strftime('%d-%b-%Y')} to {end_d.strftime('%d-%b-%Y')}")
+
+    try:
+        with SessionLocal() as db:
+            # --- PART 1: SALES ---
+            st.subheader("💰 Sales Summary")
+            master_sales_df = report_service.get_sales_report(db, start_d, end_d)
+
+            if master_sales_df.empty:
+                st.info("No sales recorded for this period.")
+            else:
+                sales_found = False
+                for head_name, head_id in head_map.items():
+                    # Get branches managed by this head
+                    t_branches = branch_service.get_managed_branches(db, head_id)
+                    t_names = [b.Branch_Name for b in t_branches]
+
+                    # Filter report for these branches
+                    t_sales = master_sales_df[master_sales_df.index.isin(t_names)]
+
+                    if not t_sales.empty:
+                        sales_found = True
+                        st.write(f"**{head_name} Territory**")
+                        st.dataframe(t_sales, use_container_width=True)
+
+                if not sales_found:
+                    st.warning("No sales found for your territories.")
+
+            st.divider()
+
+            # --- PART 2: TRANSFERS ---
+            st.subheader("🚚 Transfers (Outward)")
+            has_transfers = False
+
+            for head_name, head_id in head_map.items():
+                transfer_df = report_service.get_branch_transfer_summary(db, head_id, start_d, end_d)
+
+                if not transfer_df.empty:
+                    has_transfers = True
+                    st.write(f"**From {head_name}**")
+
+                    # Pivot for readability
+                    piv = transfer_df.pivot_table(
+                        index='Destination_Branch', columns=['Model', 'Variant'],
+                        values='Total_Quantity', aggfunc='sum', fill_value=0
+                    )
+                    piv['TOTAL'] = piv.sum(axis=1)
+                    st.dataframe(piv, use_container_width=True)
+
+            if not has_transfers:
+                st.info("No stock transfers recorded.")
+
+    except Exception as e:
+        st.error(f"Error generating report: {e}")
+
+
+# --- 3. UX HELPERS ---
 def render_global_search(db, query_str, branch_ids):
     """
     Searches Sales and Inventory across the ENTIRE territory (list of branch_ids).
@@ -72,7 +134,7 @@ def render_global_search(db, query_str, branch_ids):
         st.warning("No results found.")
 
 
-# --- 3. MODULAR TAB FUNCTIONS ---
+# --- 4. MODULAR TAB FUNCTIONS ---
 
 def render_tab_overview(managed_ids):
     """
@@ -164,12 +226,39 @@ def render_tab_pdi_management(branch_id):
             )
 
 
+# --- CONSOLIDATED TAB WRAPPERS ---
+
+def render_tab_inventory(managed_map, vehicle_master_data):
+    """Consolidated Inventory Tab: Locator + Stock Levels"""
+    st.caption("Search, locate, and analyze stock across branches.")
+    t1, t2 = st.tabs(["🔍 Locator", "📊 Stock Levels"])
+
+    with t1:
+        render_tab_locator(vehicle_master_data)
+
+    with t2:
+        render_tab_stock_interactive(managed_map)
+
+
+def render_tab_logistics(current_head_id, current_head_name, all_branch_map):
+    """Consolidated Logistics Tab: Inward + Transfers"""
+    st.caption("Manage incoming shipments and outward transfers.")
+    t1, t2 = st.tabs(["📥 Receive (Inward)", "📤 Transfer / Outward"])
+
+    with t1:
+        render_tab_inward_actions(current_head_id)
+
+    with t2:
+        render_tab_transfers(current_head_id, current_head_name, all_branch_map)
+
+
+# --- INDIVIDUAL COMPONENTS (CALLED BY WRAPPERS) ---
+
 def render_tab_stock_interactive(managed_map):
     st.subheader("📊 Inventory Drill-down")
 
     # Filters
     cols = st.columns([2, 1])
-    # Default to ALL branches selected to match the "Overview" count
     selected_branches = cols[0].multiselect("Filter Branches", options=managed_map.keys(),
                                             default=list(managed_map.keys()))
 
@@ -183,38 +272,143 @@ def render_tab_stock_interactive(managed_map):
             df = stock_service.get_multi_branch_stock(db, sel_ids)
 
         if not df.empty:
-            # FIX: Show the Total Count explicitly so user can verify against Overview tab
+            # 1. High Level Metrics
             total_stock = int(df['Stock'].sum())
             st.metric("Total Territory Stock", total_stock)
 
-            t1, t2 = st.tabs(["By Model", "By Color"])
+            st.divider()
 
-            with t1:
-                model_counts = df.groupby('model')['Stock'].sum().reset_index()
-                st.dataframe(
-                    model_counts,
-                    use_container_width=True,
-                    column_config={
-                        "Stock": st.column_config.ProgressColumn(
-                            "Quantity",
-                            format="%d",
-                            min_value=0,
-                            max_value=int(model_counts['Stock'].max())
-                        )
-                    }
+            # 2. Interactive Selection
+            c1, c2 = st.columns(2)
+
+            # MODEL SELECTOR
+            with c1:
+                # Group by model to get counts
+                model_summary = df.groupby('model')['Stock'].sum().sort_values(ascending=False)
+                model_opts = ["All Models"] + model_summary.index.tolist()
+
+                sel_model = st.selectbox("1. Select Model", model_opts)
+
+            # VARIANT SELECTOR (Conditional)
+            sel_variant = "All Variants"
+            with c2:
+                if sel_model != "All Models":
+                    # Filter for variants of selected model
+                    model_df = df[df['model'] == sel_model]
+                    variant_summary = model_df.groupby('variant')['Stock'].sum().sort_values(ascending=False)
+                    variant_opts = ["All Variants"] + variant_summary.index.tolist()
+
+                    sel_variant = st.selectbox("2. Select Variant", variant_opts)
+                else:
+                    st.info("Select a model to filter variants.")
+
+            # 3. Data Display Logic
+            st.markdown("### 📦 Stock View")
+
+            # Filter Data based on selections
+            filtered_df = df.copy()
+            if sel_model != "All Models":
+                filtered_df = filtered_df[filtered_df['model'] == sel_model]
+
+            if sel_variant != "All Variants":
+                filtered_df = filtered_df[filtered_df['variant'] == sel_variant]
+
+            # VIEW 1: If specific Variant is selected -> Show Color vs Branch Matrix (The requested view)
+            if sel_model != "All Models" and sel_variant != "All Variants":
+                st.success(f"Showing stock for **{sel_model} {sel_variant}**")
+
+                # Pivot: Index=Branch, Col=Color
+                pivot = filtered_df.pivot_table(
+                    index='Branch_Name',
+                    columns='color',
+                    values='Stock',
+                    aggfunc='sum',
+                    fill_value=0
                 )
+                pivot['TOTAL'] = pivot.sum(axis=1)
+                pivot = pivot.sort_values('TOTAL', ascending=False)
 
-            with t2:
-                pivot = df.pivot_table(index=['model', 'variant'], columns='color', values='Stock', fill_value=0)
                 st.dataframe(pivot, use_container_width=True)
+
+            # VIEW 2: If only Model is selected -> Show Variant Summary
+            elif sel_model != "All Models":
+                st.caption(f"Breakdown of {sel_model} by Variant")
+                var_group = filtered_df.groupby('variant')['Stock'].sum().reset_index().sort_values('Stock',
+                                                                                                    ascending=False)
+                st.dataframe(var_group, use_container_width=True)
+
+            # VIEW 3: Overview (All Models) -> Show Model Summary
+            else:
+                st.caption("Overview by Model")
+                mod_group = filtered_df.groupby('model')['Stock'].sum().reset_index().sort_values('Stock',
+                                                                                                  ascending=False)
+                st.dataframe(mod_group, use_container_width=True)
+
         else:
             st.warning("No stock found in selected branches.")
 
 
+def render_tab_locator(vehicle_master_data):
+    st.subheader("🔍 Vehicle Locator")
+
+    # Toggle Search Mode
+    search_mode = st.radio("Search Mode:", ["By Attributes", "By Chassis"], horizontal=True)
+
+    found_vehicles = pd.DataFrame()
+
+    with st.container(border=True):
+        if search_mode == "By Attributes":
+            c1, c2, c3 = st.columns(3)
+
+            # Cascading Dropdowns
+            sel_model = c1.selectbox("Model", options=[""] + list(vehicle_master_data.keys()))
+
+            variants = []
+            if sel_model and sel_model in vehicle_master_data:
+                variants = list(vehicle_master_data[sel_model].keys())
+            sel_variant = c2.selectbox("Variant", options=[""] + variants)
+
+            colors = []
+            if sel_model and sel_variant and sel_variant in vehicle_master_data[sel_model]:
+                colors = vehicle_master_data[sel_model][sel_variant]
+            sel_color = c3.selectbox("Color", options=[""] + colors)
+
+            if st.button("Search Vehicles", type="primary"):
+                if not sel_model:
+                    st.warning("Please select at least a Model.")
+                else:
+                    with SessionLocal() as db:
+                        found_vehicles = stock_service.search_vehicles(
+                            db, model=sel_model, variant=sel_variant, color=sel_color
+                        )
+
+        else:
+            # By Chassis
+            chassis_input = st.text_input("Enter Chassis Number (Full or Partial):")
+            if st.button("Search Chassis", type="primary"):
+                if len(chassis_input) < 4:
+                    st.warning("Please enter at least 4 characters.")
+                else:
+                    with SessionLocal() as db:
+                        found_vehicles = stock_service.search_vehicles(db, chassis=chassis_input)
+
+    # Display Results
+    if not found_vehicles.empty:
+        st.success(f"Found {len(found_vehicles)} vehicles.")
+        st.dataframe(
+            found_vehicles,
+            use_container_width=True,
+            column_config={
+                "Current_Location": st.column_config.TextColumn("Branch", help="Where is the vehicle now?"),
+                "status": st.column_config.TextColumn("Status", width="small")
+            }
+        )
+    elif st.session_state.get("search_performed", False):
+        # Optional: Add a state check to only show this if a search was actually attempted
+        st.info("No vehicles found matching criteria.")
+
+
 def render_tab_reports(current_head_id, current_head_name, all_branch_map):
-    """
-    Restored "Vehicle Movement Reports" section.
-    """
     st.header("📈 Reports & Summaries")
 
     report_type = st.selectbox(
@@ -326,9 +520,6 @@ def render_tab_inward_actions(head_id):
 
 
 def render_tab_transfers(current_head_id, current_head_name, all_branch_map):
-    """
-    Handles both Stock Transfers (Head -> Sub) and Manual Sub-Branch Sales.
-    """
     st.subheader("📤 Outward Operations")
 
     # Mode Selector to switch between Transfer and Sale
@@ -434,7 +625,6 @@ def render_tab_transfers(current_head_id, current_head_name, all_branch_map):
 def _render_batch_builder(batch_key, scanner_key, btn_label):
     """
     Helper to render the Scan/Type -> Add to Batch UI.
-    Prevents code duplication between Transfer and Sale modes.
     """
     # Initialize batch if missing
     if batch_key not in st.session_state:
@@ -483,15 +673,17 @@ def _render_batch_builder(batch_key, scanner_key, btn_label):
             st.session_state[batch_key] = []
             st.rerun()
 
+
 # --- 4. MAIN LAYOUT ---
 def render():
     st.title("🚀 PDI Command Center")
 
     # Context Loading
-    all_branches, head_branches, _ = load_config_data()
+    all_branches, head_branches, vehicle_master = load_config_data()
     all_branch_map = {b.Branch_Name: b.Branch_ID for b in all_branches}  # For reports
     head_map = {b.Branch_Name: b.Branch_ID for b in head_branches}
     branch_id = st.session_state.inventory_branch_id
+    user_role = st.session_state.get('inventory_user_role', '')
 
     # Sidebar Context
     with st.sidebar:
@@ -505,6 +697,57 @@ def render():
             current_head_id = branch_id
             current_head_name = st.session_state.inventory_branch_name
 
+        st.divider()
+
+        # --- RESTORED: Daily Sales & Transfer Report (IN POPUP) ---
+        with st.expander("📊 Detailed Sales & Transfers", expanded=True):
+            st.caption("Generate Report")
+            today = date.today()
+            date_range = st.date_input(
+                "Date Range",
+                value=(today, today),
+                max_value=today
+            )
+
+            if isinstance(date_range, tuple) and len(date_range) == 2:
+                start_d, end_d = date_range
+                if st.button("Run Report", type="primary", use_container_width=True):
+                    show_daily_report_dialog(start_d, end_d, head_map)
+
+        st.divider()
+
+        # --- NEW: Admin S08 Mappings (Owner Only) ---
+        if user_role == "Owner":
+            with st.expander("🛠️ Admin: S08 Mappings"):
+                # 1. Add New
+                with st.form("add_mapping_form"):
+                    st.write("Add New Product Mapping")
+                    mc = st.text_input("Model Code (e.g. ACT6G)")
+                    vc = st.text_input("Variant Code (e.g. 5ID)")
+                    rm = st.text_input("Real Model (e.g. Activa 6G)")
+                    rv = st.text_input("Real Variant (e.g. STD)")
+
+                    if st.form_submit_button("Add Mapping"):
+                        if mc and vc and rm and rv:
+                            with SessionLocal() as db:
+                                success, msg = stock_service.add_product_mapping(db, mc, vc, rm, rv)
+                            if success:
+                                st.success(msg)
+                            else:
+                                st.error(msg)
+                        else:
+                            st.warning("All fields required.")
+
+                # 2. View Existing (Restored Checkbox)
+                if st.checkbox("Show Current Mappings"):
+                    with SessionLocal() as db:
+                        mappings_df = stock_service.get_all_product_mappings(db)
+
+                    if not mappings_df.empty:
+                        st.dataframe(mappings_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No mappings found.")
+
     # Get managed branches for this head
     with SessionLocal() as db:
         managed = branch_service.get_managed_branches(db, current_head_id)
@@ -516,27 +759,22 @@ def render():
     tabs = st.tabs([
         "🏠 Overview",
         "📋 Task Manager",
-        "📊 Stock Room",
-        "📈 Reports",
-        "📥 Inward",
-        "📤 Transfers"
+        "🏍️ Inventory",
+        "🚚 Logistics",
+        "📈 Reports"
     ])
 
     with tabs[0]:
-        render_tab_overview(managed_ids)  # Pass ALL IDs for correct counts
+        render_tab_overview(managed_ids)
 
     with tabs[1]:
         render_tab_pdi_management(current_head_id)
 
     with tabs[2]:
-        render_tab_stock_interactive(managed_map)
+        render_tab_inventory(managed_map, vehicle_master)
 
     with tabs[3]:
-        # New Tab for Summaries
-        render_tab_reports(current_head_id, current_head_name, all_branch_map)
+        render_tab_logistics(current_head_id, current_head_name, all_branch_map)
 
     with tabs[4]:
-        render_tab_inward_actions(current_head_id)
-
-    with tabs[5]:
-        render_tab_transfers(current_head_id, current_head_name, all_branch_map)
+        render_tab_reports(current_head_id, current_head_name, all_branch_map)

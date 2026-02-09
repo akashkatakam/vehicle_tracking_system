@@ -56,7 +56,79 @@ def get_vehicle_master_data(db: Session) -> dict:
     return master_data
 
 
+def search_vehicles(db: Session, chassis: str = None, model: str = None, variant: str = None,
+                    color: str = None) -> pd.DataFrame:
+    """
+    Locates vehicles by Chassis OR by Model/Variant/Color attributes.
+    Returns Branch Location and Status.
+    """
+    query = db.query(
+        models.VehicleMaster.chassis_no,
+        models.VehicleMaster.model,
+        models.VehicleMaster.variant,
+        models.VehicleMaster.color,
+        models.VehicleMaster.status,
+        models.VehicleMaster.dc_number,
+        models.Branch.Branch_Name.label("Current_Location")
+    ).join(models.Branch, models.VehicleMaster.current_branch_id == models.Branch.Branch_ID)
+
+    if chassis:
+        query = query.filter(models.VehicleMaster.chassis_no.ilike(f"%{chassis}%"))
+    else:
+        # Attribute search
+        if model:
+            query = query.filter(models.VehicleMaster.model == model)
+        if variant:
+            query = query.filter(models.VehicleMaster.variant == variant)
+        if color:
+            query = query.filter(models.VehicleMaster.color == color)
+
+    # Limit results to prevent massive dumps if filters are loose
+    query = query.filter(models.VehicleMaster.status.in_(['In Stock', 'In Transit']))
+    query = query.limit(500)
+
+    return pd.read_sql(query.statement, db.get_bind())
+
+
+def get_all_product_mappings(db: Session) -> pd.DataFrame:
+    """Returns all S08 product mappings."""
+    query = db.query(
+        models.ProductMapping.model_code,
+        models.ProductMapping.variant_code,
+        models.ProductMapping.real_model,
+        models.ProductMapping.real_variant
+    )
+    return pd.read_sql(query.statement, db.get_bind())
+
+
 # --- WRITES ---
+
+def add_product_mapping(db: Session, m_code: str, v_code: str, r_model: str, r_variant: str):
+    """Adds a new mapping for S08 file decoding."""
+    try:
+        # Check if exists
+        exists = db.query(models.ProductMapping).filter(
+            models.ProductMapping.model_code == m_code,
+            models.ProductMapping.variant_code == v_code
+        ).first()
+
+        if exists:
+            return False, f"Mapping for {m_code}-{v_code} already exists."
+
+        mapping = models.ProductMapping(
+            model_code=m_code,
+            variant_code=v_code,
+            real_model=r_model,
+            real_variant=r_variant
+        )
+        db.add(mapping)
+        db.commit()
+        return True, "Mapping added successfully."
+    except Exception as e:
+        db.rollback()
+        return False, str(e)
+
+
 def log_bulk_inward_master(db: Session, current_branch_id: str, source: str, load_no: str, date_val: date, remarks: str,
                            vehicle_batch: List[Dict], initial_status: str = 'In Stock'):
     """
@@ -183,13 +255,7 @@ def bulk_correct_stock(db: Session, update_batch: List[Dict], correction_date: d
 
             # --- Correction ---
             original_branch_id = vehicle.current_branch_id
-
-            # Update fields from CSV (using existing values as default if CSV field is missing)
-            # vehicle.model = item.get('model', vehicle.model)
-            # vehicle.variant = item.get('variant', vehicle.variant)
-            # vehicle.color = item.get('color', vehicle.color)
             vehicle.current_branch_id = item.get('current_branch_id', vehicle.current_branch_id)
-            # vehicle.load_reference_number = item.get('load_reference_number',vehicle.load_reference_number)
 
             update_count += 1
 
@@ -213,212 +279,6 @@ def bulk_correct_stock(db: Session, update_batch: List[Dict], correction_date: d
         db.rollback()
         return False, f"FATAL Database Error: {e}", error_log
 
-
-# ---
-# --- FUNCTIONS FOR SALES LIFECYCLE ---
-# ---
-def get_completed_sales_last_48h(db: Session, branch_id: str = None) -> pd.DataFrame:
-    """
-    Gets all sales records that completed PDI within the last 48 hours.
-    """
-    # Define the statuses that mean a vehicle is "allotted"
-    allotted_statuses = ['PDI Complete', 'Insurance Done', 'TR Done']
-
-    # Calculate the time 48 hours ago, using the timezone from models.py
-    time_48h_ago = datetime.now(models.IST_TIMEZONE) - timedelta(days=2)
-
-    query = (
-        db.query(models.SalesRecord)
-        .filter(
-            # Check for the correct statuses
-            models.SalesRecord.fulfillment_status.in_(allotted_statuses),
-            # Check that the completion date is within the last 48 hours
-            models.SalesRecord.pdi_completion_date >= time_48h_ago
-        )
-    )
-
-    if branch_id:
-        query = query.filter(models.SalesRecord.Branch_ID == branch_id)
-
-    query = query.order_by(models.SalesRecord.pdi_completion_date.desc())
-
-    return pd.read_sql(query.statement, db.get_bind())
-
-
-def get_users_by_role(db: Session, role: str) -> List[models.User]:
-    """Retrieves all users matching a specific role."""
-    return db.query(models.User).filter(models.User.role == role).all()
-
-
-def get_sales_records_by_status(db: Session, status: str, branch_id: str = None) -> pd.DataFrame:
-    """Gets all sales records matching a fulfillment_status."""
-    query = db.query(models.SalesRecord).filter(models.SalesRecord.fulfillment_status == status)
-    if branch_id:
-        query = query.filter(models.SalesRecord.Branch_ID == branch_id)
-    return pd.read_sql(query.statement, db.get_bind())
-
-
-def get_sales_records_by_statuses(db: Session, statuses: List[str], branch_id: str = None) -> pd.DataFrame:
-    """Gets all sales records matching a list of fulfillment_statuses."""
-    query = db.query(models.SalesRecord).filter(models.SalesRecord.fulfillment_status.in_(statuses))
-    if branch_id:
-        query = query.filter(models.SalesRecord.Branch_ID == branch_id)
-    return pd.read_sql(query.statement, db.get_bind())
-
-
-def get_sales_records_for_mechanic(db: Session, mechanic_username: str, branch_id: str = None) -> pd.DataFrame:
-    """Gets tasks for a specific mechanic."""
-    query = db.query(models.SalesRecord).filter(
-        models.SalesRecord.pdi_assigned_to == mechanic_username,
-        models.SalesRecord.fulfillment_status == 'PDI In Progress'
-    )
-    if branch_id:
-        query = query.filter(models.SalesRecord.Branch_ID == branch_id)
-    return pd.read_sql(query.statement, db.get_bind())
-
-
-def assign_pdi_mechanic(db: Session, sale_id: int, mechanic_name: str):
-    """Assigns a PDI task to a mechanic."""
-    try:
-        record = db.query(models.SalesRecord).filter(models.SalesRecord.id == sale_id).first()
-        if record:
-            record.pdi_assigned_to = mechanic_name
-            record.fulfillment_status = "PDI In Progress"
-            db.commit()
-    except Exception as e:
-        db.rollback()
-        raise e
-
-
-# --- UPDATED: This is the new CRITICAL function ---
-def complete_pdi(db: Session, sale_id: int, chassis_no: str, engine_no: str = None, dc_number: str = None):
-    """
-    Links a scanned vehicle from VehicleMaster to a SalesRecord,
-    validates it, and marks PDI as complete.
-    This is the "source of truth" function.
-    """
-    try:
-        # 1. Find the SalesRecord (the "request")
-        record = db.query(models.SalesRecord).filter(models.SalesRecord.id == sale_id).first()
-        if not record:
-            return False, "Error: Sales Record not found."
-
-        # 2. Find the Vehicle (the "fulfillment")
-        vehicle = db.query(models.VehicleMaster).filter(models.VehicleMaster.chassis_no == chassis_no).first()
-
-        # 3. Validation
-        if not vehicle:
-            return False, f"Error: Chassis No. '{chassis_no}' not found in Vehicle Master. Please scan a valid vehicle."
-
-        if vehicle.status != 'In Stock':
-            if vehicle.sale_id == sale_id:
-                # Vehicle is already linked, just update status
-                record.fulfillment_status = "PDI Complete"
-                record.pdi_completion_date = datetime.now(models.IST_TIMEZONE)
-                db.commit()
-                return True, "This vehicle is already allotted to this sale. PDI marked complete."
-            else:
-                return False, f"Error: Vehicle is already '{vehicle.status}' and linked to another sale (ID: {vehicle.sale_id})."
-
-        # 4. (Optional but Recommended) Validate vehicle model
-        if vehicle.model.upper() != record.Model.upper() or vehicle.variant.upper() != record.Variant.upper() or vehicle.color != record.Paint_Color:
-            return False, f"Mismatch: Customer wants '{record.Model}/{record.Variant}/{record.Paint_Color}', but you scanned a '{vehicle.model}/{vehicle.variant}/{vehicle.color}'."
-
-        # 5. Link and Update (The Transaction)
-
-        # Update VehicleMaster: Set status, link to sale
-        vehicle.status = 'Allotted'  # 'Allotted' is better than 'PDI Complete' for status
-        vehicle.sale_id = sale_id
-
-        # Update SalesRecord: Add the scanned details
-        record.chassis_no = vehicle.chassis_no
-        record.engine_no = vehicle.engine_no if engine_no else vehicle.engine_no  # Use vehicle's engine_no if not provided
-        record.fulfillment_status = "PDI Complete"
-        record.pdi_completion_date = datetime.now(models.IST_TIMEZONE)
-
-        db.commit()
-        return True, "Success: Vehicle linked and PDI marked as complete!"
-
-    except Exception as e:
-        db.rollback()
-        return False, f"A database error occurred: {e}"
-
-
-def update_insurance_tr_status(db: Session, sale_id: int, updates: Dict[str, Any]):
-    """Updates the Insurance, TR, Dues, and Tax flags."""
-    try:
-        record = db.query(models.SalesRecord).filter(models.SalesRecord.id == sale_id).first()
-        if record:
-            # Apply all updates from the dictionary
-            for key, value in updates.items():
-                if hasattr(record, key):
-                    setattr(record, key, value)
-
-            # Update fulfillment status based on progression
-            if record.is_tr_done:
-                record.fulfillment_status = "TR Done"
-
-            elif record.is_insurance_done:
-                record.fulfillment_status = "Insurance Done"
-                vehicle = db.query(models.VehicleMaster).filter(models.VehicleMaster.sale_id == sale_id).first()
-                if vehicle:
-                    vehicle.status = "Sold"
-
-            db.commit()
-    except Exception as e:
-        db.rollback()
-        raise e
-
-
-def log_bulk_manual_sub_branch_sale(db: Session, chassis_list: List[str], sale_date: date, remarks: str):
-    """
-    Marks a list of vehicles as 'Sold' in the VehicleMaster table in a single
-    atomic transaction and logs an InventoryTransaction.
-    """
-    if not chassis_list:
-        # It's good practice to raise an exception for an empty list
-        raise Exception("No vehicles in the batch to process.")
-
-    try:
-        for chassis_no in chassis_list:
-            # 1. Find the vehicle
-            vehicle = db.query(models.VehicleMaster).filter(
-                models.VehicleMaster.chassis_no == chassis_no
-            ).first()
-
-            if not vehicle:
-                raise Exception(f"Vehicle {chassis_no} not found.")
-
-            if vehicle.status == 'Sold':
-                raise Exception(f"Vehicle {chassis_no} is already marked as 'Sold'.")
-
-            # Get the branch_id from the vehicle itself
-            branch_id = vehicle.current_branch_id
-
-            # 2. Update the VehicleMaster status
-            vehicle.status = 'Sold'
-
-            # 3. Log the InventoryTransaction
-            sale_log = models.InventoryTransaction(
-                Date=sale_date,
-                Transaction_Type=models.TransactionType.SALE,
-                Current_Branch_ID=branch_id,
-                Model=vehicle.model,
-                Variant=vehicle.variant,
-                Color=vehicle.color,
-                Quantity=1,
-                Remarks=f"Manual Sub-Branch Sale. {remarks}"
-            )
-            db.add(sale_log)
-
-        # 4. Commit all changes at once
-        db.commit()
-        return True, f"Success: {len(chassis_list)} vehicles marked as 'Sold'."
-
-    except Exception as e:
-        # If any error occurs (like a chassis not found), roll back everything
-        db.rollback()
-        return False, str(e)
 
 def get_pending_loads(db: Session, branch_id: str) -> List[str]:
     """Returns a list of unique Load Reference Numbers that are currently 'In Transit'."""
@@ -471,3 +331,53 @@ def receive_load(db: Session, branch_id: str, load_reference: str):
     except Exception as e:
         db.rollback()
         return False, f"Error receiving load: {e}"
+
+
+def log_bulk_manual_sub_branch_sale(db: Session, chassis_list: List[str], sale_date: date, remarks: str):
+    """
+    Marks a list of vehicles as 'Sold' in the VehicleMaster table in a single
+    atomic transaction and logs an InventoryTransaction.
+    """
+    if not chassis_list:
+        raise Exception("No vehicles in the batch to process.")
+
+    try:
+        for chassis_no in chassis_list:
+            # 1. Find the vehicle
+            vehicle = db.query(models.VehicleMaster).filter(
+                models.VehicleMaster.chassis_no == chassis_no
+            ).first()
+
+            if not vehicle:
+                raise Exception(f"Vehicle {chassis_no} not found.")
+
+            if vehicle.status == 'Sold':
+                raise Exception(f"Vehicle {chassis_no} is already marked as 'Sold'.")
+
+            # Get the branch_id from the vehicle itself
+            branch_id = vehicle.current_branch_id
+
+            # 2. Update the VehicleMaster status
+            vehicle.status = 'Sold'
+
+            # 3. Log the InventoryTransaction
+            sale_log = models.InventoryTransaction(
+                Date=sale_date,
+                Transaction_Type=models.TransactionType.SALE,
+                Current_Branch_ID=branch_id,
+                Model=vehicle.model,
+                Variant=vehicle.variant,
+                Color=vehicle.color,
+                Quantity=1,
+                Remarks=f"Manual Sub-Branch Sale. {remarks}"
+            )
+            db.add(sale_log)
+
+        # 4. Commit all changes at once
+        db.commit()
+        return True, f"Success: {len(chassis_list)} vehicles marked as 'Sold'."
+
+    except Exception as e:
+        # If any error occurs (like a chassis not found), roll back everything
+        db.rollback()
+        return False, str(e)
