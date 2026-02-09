@@ -1,7 +1,7 @@
 # ui/pdi_dashboard.py
 import streamlit as st
 import pandas as pd
-from datetime import date
+from datetime import date, time
 from database import SessionLocal
 from services import stock_service, sales_service, branch_service, report_service, email_import_service
 import models
@@ -300,6 +300,63 @@ def render():
             current_head_id = head_map[selected_head_name]
             st.session_state.pdi_active_head_id = current_head_id
             current_head_name = selected_head_name
+            # ==========================================
+            # 🛠️ DECODER SETTINGS (SUPER OWNER ONLY)
+            # ==========================================
+            with st.sidebar.expander("⚙️ S08 Decoder Settings", expanded=False):
+                st.caption("Map OEM Codes (e.g. 5ID) to Real Names")
+
+                # 1. VIEW EXISTING MAPPINGS
+                if st.checkbox("Show All Mappings"):
+                    with SessionLocal() as db:
+                        mappings = db.query(models.ProductMapping).all()
+                        if mappings:
+                            # Format for readability
+                            data = [
+                                {
+                                    "OEM Code": f"{m.model_code} / {m.variant_code}",
+                                    "Real Name": f"{m.real_model} {m.real_variant}",
+                                    "ID": m.id
+                                }
+                                for m in mappings
+                            ]
+                            st.dataframe(data, hide_index=True)
+                        else:
+                            st.info("No mappings found.")
+
+                st.divider()
+
+                # 2. ADD NEW MAPPING
+                st.write("**Add New Mapping**")
+                with st.form("super_owner_add_map", clear_on_submit=True):
+                    c1, c2 = st.columns(2)
+                    m_code = c1.text_input("Model Code", placeholder="ACT6G").upper().strip()
+                    v_code = c2.text_input("Variant Code", placeholder="5ID").upper().strip()
+
+                    c3, c4 = st.columns(2)
+                    real_m = c3.text_input("Real Model", placeholder="Activa 6G").strip()
+                    real_v = c4.text_input("Real Variant", placeholder="STD").strip()
+
+                    if st.form_submit_button("💾 Save"):
+                        if m_code and v_code and real_m:
+                            with SessionLocal() as db:
+                                # Avoid Duplicates
+                                exists = db.query(models.ProductMapping).filter_by(
+                                    model_code=m_code, variant_code=v_code
+                                ).first()
+
+                                if not exists:
+                                    db.add(models.ProductMapping(
+                                        model_code=m_code, variant_code=v_code,
+                                        real_model=real_m, real_variant=real_v
+                                    ))
+                                    db.commit()
+                                    st.success(f"Mapped {m_code} -> {real_m}")
+                                    st.rerun()
+                                else:
+                                    st.error("Mapping already exists!")
+                        else:
+                            st.warning("Missing fields")
             
         else:
             # --- BRANCH-SPECIFIC USER LOGIC ---
@@ -497,59 +554,146 @@ def render():
             st.error(f"Error generating report: {e}")
     
     elif selected_tab == "📥 OEM Inward":
-        st.header(f"Stock Arrival at {current_head_name}")
-        # with st.expander("🤖 Auto-Import from Email (Daily Check)", expanded=True):
-        #     st.info("Checks configured email for the latest S08 file.")
-        #
-        #     if st.button("🔄 Fetch & Process Latest Email"):
-        #         with st.spinner("Connecting to Email Server..."):
-        #             raw_content, status_msg = email_import_service.fetch_latest_s08_email()
-        #
-        #         if raw_content:
-        #             st.success(status_msg)
-        #             # 1. Parse
-        #             batch_data = email_import_service.parse_s08_content(raw_content)
-        #
-        #             if batch_data:
-        #                 # 2. Convert to DataFrame for processing
-        #                 df_preview = pd.DataFrame(batch_data)
-        #
-        #                 # 3. Apply Color Mapping (Code -> Name)
-        #                 # We create a new column 'color_code' to keep reference, and map 'color'
-        #                 df_preview['color_code'] = df_preview['color']
-        #                 df_preview['color'] = df_preview['color_code'].map(COLOR_CODE_MAP).fillna(
-        #                     df_preview['color_code'])
-        #
-        #                 # Show result
-        #                 st.write(f"**Found {len(df_preview)} vehicles.**")
-        #                 st.dataframe(df_preview, use_container_width=True)
-        #
-        #                 # Store in session state for the confirmation step
-        #                 st.session_state['auto_import_batch'] = df_preview.to_dict('records')
-        #             else:
-        #                 st.warning("File found, but no vehicle records could be parsed.")
-        #         else:
-        #             st.error(status_msg)
-        #
-        #     # Confirmation Step
-        #     if st.session_state.get('auto_import_batch'):
-        #         if st.button("✅ Confirm & Save to Database", type="primary"):
-        #             try:
-        #                 with SessionLocal() as db:
-        #                     stock_service.log_bulk_inward_master(
-        #                         db,
-        #                         current_head_id,
-        #                         "HMSI (Email Auto)",
-        #                         "AUTO-S08",
-        #                         date.today(),
-        #                         "Auto-imported from S08",
-        #                         st.session_state['auto_import_batch']
-        #                     )
-        #                 st.success("Batch successfully saved!")
-        #                 del st.session_state['auto_import_batch']  # Clear after save
-        #                 st.cache_data.clear()
-        #             except Exception as e:
-        #                 st.error(f"Save Error: {e}")
+        st.header(f"Stock Arrival ({current_head_name})")
+
+        # --- DEFINING THE CALLBACK (The Fix) ---
+        def save_transit_callback():
+            """
+            This runs IMMEDIATELY when 'Save' is clicked,
+            before the page reloads.
+            """
+            if 'transit_import_data' in st.session_state:
+                data_to_save = st.session_state['transit_import_data']
+                try:
+                    with SessionLocal() as db:
+                        stock_service.log_bulk_inward_master(
+                            db,
+                            current_head_id,
+                            "Auto-Import",
+                            "MULTI",
+                            date.today(),
+                            "Batch Import",
+                            data_to_save,
+                            initial_status='In Transit'
+                        )
+                    # Set a success flag to show a message AFTER the rerun
+                    st.session_state[
+                        'save_success_msg'] = f"✅ Successfully saved {len(data_to_save)} vehicles to 'In Transit'!"
+                    # Clear the data so we don't save it twice
+                    del st.session_state['transit_import_data']
+                except Exception as e:
+                    st.session_state['save_error_msg'] = f"❌ Error saving data: {str(e)}"
+
+        # 1. PENDING LOADS
+        st.subheader("🚚 In-Transit Loads (Pending Receipt)")
+
+        with SessionLocal() as db:
+            # Fetch list of load references currently 'In Transit'
+            pending_loads = stock_service.get_pending_loads(db, current_head_id)
+
+            if not pending_loads:
+                st.info("No vehicles currently in transit.")
+            else:
+                for load_ref in pending_loads:
+                    # Create a card/expander for each load
+                    with st.expander(f"🚛 Load #{load_ref}", expanded=False):
+
+                        # Layout: Summary on left, Action button on right
+                        c1, c2 = st.columns([3, 1])
+
+                        # Optional: Show a quick summary of what's inside this load
+                        # (You can remove this inner query if it's too slow, but it's helpful)
+                        load_vehs = db.query(models.VehicleMaster).filter(
+                            models.VehicleMaster.load_reference_number == load_ref,
+                            models.VehicleMaster.status == 'In Transit'
+                        ).all()
+
+                        c1.write(f"**Contains {len(load_vehs)} Vehicles**")
+                        if load_vehs:
+                            # Show breakdown by Model
+                            counts = pd.DataFrame([v.model for v in load_vehs], columns=["Model"]).value_counts()
+                            c1.dataframe(counts, height=100)
+
+                        # THE RECEIVE BUTTON
+                        # Key is unique so multiple buttons don't conflict
+                        if c2.button("✅ Mark Received", key=f"recv_{load_ref}"):
+                            with st.spinner("Processing Receipt..."):
+                                success, msg = stock_service.receive_load(db, current_head_id, load_ref)
+
+                            if success:
+                                st.success(msg)
+                                time.sleep(1)  # Give user a moment to read message
+                                st.rerun()
+                            else:
+                                st.error(msg)
+
+        st.divider()
+
+        # 2. AUTO-IMPORT SECTION
+        with st.expander("🤖 Check for New Loads (Last 5 Emails)", expanded=True):
+
+            # --- MESSAGE HANDLING (From Callback) ---
+            if 'save_success_msg' in st.session_state:
+                st.success(st.session_state['save_success_msg'])
+                del st.session_state['save_success_msg']  # Show once, then delete
+
+            if 'save_error_msg' in st.session_state:
+                st.error(st.session_state['save_error_msg'])
+                del st.session_state['save_error_msg']
+
+            # --- SCAN BUTTON ---
+            st.info(f"Scanning last 5 emails for Branch ID: {current_head_id}...")
+            if st.button("🔄 Scan & Fetch New Loads"):
+                with st.spinner("Connecting to email..."):
+                    with SessionLocal() as db:
+                        batches, logs = email_import_service.fetch_and_process_emails(db, current_head_id)
+
+                # Show Logs
+                for log in logs:
+                    if "❌" in log:
+                        st.error(log)
+                    elif "✅" in log:
+                        st.success(log)
+                    else:
+                        st.text(log)
+
+                if batches:
+                    df = pd.DataFrame(batches)
+                    # Apply Color Map
+                    df['color_name'] = df['color'].map(COLOR_CODE_MAP).fillna(df['color'])
+                    # STORE IN SESSION STATE
+                    st.session_state['transit_import_data'] = df.to_dict('records')
+                else:
+                    if 'transit_import_data' in st.session_state:
+                        del st.session_state['transit_import_data']  # Clear old scans if new scan is empty
+                    st.warning("No new loads found.")
+
+            # --- PREVIEW & SAVE BUTTON ---
+            # This block persists because it checks session_state, not the button click
+            if 'transit_import_data' in st.session_state:
+                records = st.session_state['transit_import_data']
+                df_preview = pd.DataFrame(records)
+
+                st.divider()
+                st.subheader(f"🚀 Ready to Import {len(df_preview)} Vehicles")
+                st.dataframe(
+                    df_preview[['load_reference', 'model', 'variant', 'color_name', 'chassis_no']],
+                    use_container_width=True
+                )
+
+                col1, col2 = st.columns([1, 4])
+
+                # THE FIX: Use on_click=callback
+                # We do NOT put logic inside `if st.button(...)`
+                col1.button(
+                    "Save to 'In Transit'",
+                    type="primary",
+                    on_click=save_transit_callback  # <--- CALLS FUNCTION BEFORE RERUN
+                )
+
+                if col2.button("Cancel / Clear"):
+                    del st.session_state['transit_import_data']
+                    st.rerun()
         st.divider()
         st.info("Or Upload CSV Manually below...")
         

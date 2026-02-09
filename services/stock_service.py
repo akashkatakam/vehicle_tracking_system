@@ -58,28 +58,38 @@ def get_vehicle_master_data(db: Session) -> dict:
 
 # --- WRITES ---
 def log_bulk_inward_master(db: Session, current_branch_id: str, source: str, load_no: str, date_val: date, remarks: str,
-                           vehicle_batch: List[Dict]):
+                           vehicle_batch: List[Dict], initial_status: str = 'In Stock'):
+    """
+    Logs a batch. 'initial_status' can be 'In Stock' (for CSV) or 'In Transit' (for S08).
+    """
     try:
         for item in vehicle_batch:
+            # Use the extracted load_reference if available, otherwise fallback to the manual one
+            ref_no = item.get('load_reference', load_no)
+
             vehicle = models.VehicleMaster(
                 chassis_no=item['chassis_no'],
                 engine_no=item.get('engine_no'),
-                load_reference_number=load_no,
+                load_reference_number=ref_no,  # Saved here
                 model=item['model'],
                 variant=item['variant'],
                 color=item['color'],
-                status='In Stock',
+                status=initial_status,  # Use the dynamic status
                 date_received=date_val,
                 current_branch_id=current_branch_id
             )
             db.add(vehicle)
 
-            db.add(models.InventoryTransaction(
-                Date=date_val, Transaction_Type=TransactionType.INWARD_OEM,
-                Current_Branch_ID=current_branch_id, Source_External=source,
-                Load_Number=load_no, Remarks=remarks,
-                Model=item['model'], Variant=item['variant'], Color=item['color'], Quantity=1
-            ))
+            # Only log the InventoryTransaction if it is actually IN STOCK.
+            # If it's In Transit, we don't count it as inventory yet.
+            if initial_status == 'In Stock':
+                db.add(models.InventoryTransaction(
+                    Date=date_val, Transaction_Type=TransactionType.INWARD_OEM,
+                    Current_Branch_ID=current_branch_id, Source_External=source,
+                    Load_Number=ref_no, Remarks=remarks,
+                    Model=item['model'], Variant=item['variant'], Color=item['color'], Quantity=1
+                ))
+
         db.commit()
     except Exception as e:
         db.rollback()
@@ -409,3 +419,55 @@ def log_bulk_manual_sub_branch_sale(db: Session, chassis_list: List[str], sale_d
         # If any error occurs (like a chassis not found), roll back everything
         db.rollback()
         return False, str(e)
+
+def get_pending_loads(db: Session, branch_id: str) -> List[str]:
+    """Returns a list of unique Load Reference Numbers that are currently 'In Transit'."""
+    results = db.query(models.VehicleMaster.load_reference_number).filter(
+        models.VehicleMaster.current_branch_id == branch_id,
+        models.VehicleMaster.status == 'In Transit'
+    ).distinct().all()
+    return [r[0] for r in results if r[0]]
+
+
+def receive_load(db: Session, branch_id: str, load_reference: str):
+    """
+    Moves all vehicles in a specific load from 'In Transit' to 'In Stock'
+    and logs the Inventory Transaction.
+    """
+    try:
+        # Find all vehicles in this load
+        vehicles = db.query(models.VehicleMaster).filter(
+            models.VehicleMaster.current_branch_id == branch_id,
+            models.VehicleMaster.load_reference_number == load_reference,
+            models.VehicleMaster.status == 'In Transit'
+        ).all()
+
+        if not vehicles:
+            return False, "No 'In Transit' vehicles found for this Load ID."
+
+        today = date.today()
+
+        for v in vehicles:
+            # Update Status
+            v.status = 'In Stock'
+            v.date_received = today  # Update receipt date to TODAY (actual arrival)
+
+            # Now we Log the Transaction (Stock Increase)
+            db.add(models.InventoryTransaction(
+                Date=today,
+                Transaction_Type=TransactionType.INWARD_OEM,
+                Current_Branch_ID=branch_id,
+                Source_External="HMSI (Transit Received)",
+                Load_Number=load_reference,
+                Remarks=f"Received Load {load_reference}",
+                Model=v.model,
+                Variant=v.variant,
+                Color=v.color,
+                Quantity=1
+            ))
+
+        db.commit()
+        return True, f"Successfully received {len(vehicles)} vehicles from Load {load_reference}."
+    except Exception as e:
+        db.rollback()
+        return False, f"Error receiving load: {e}"

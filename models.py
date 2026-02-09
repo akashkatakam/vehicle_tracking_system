@@ -276,6 +276,25 @@ class VehicleMaster(Base):
     sale_record = relationship("SalesRecord", back_populates="vehicle")
 
 
+class ProductMapping(Base):
+    """
+    Maps OEM Codes to Real Names.
+    Example: ModelCode='ACT6G', VariantCode='5ID' -> RealVariant='STD'
+    """
+    __tablename__ = "product_mappings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    model_code = Column(String, index=True)  # e.g., ACT6G
+    variant_code = Column(String, index=True)  # e.g., 5ID
+    real_model = Column(String)  # e.g., Activa 6G
+    real_variant = Column(String)  # e.g., STD
+
+    # Prevent duplicate mappings for the same code pair
+    __table_args__ = (
+        UniqueConstraint('model_code', 'variant_code', name='uix_model_variant'),
+    )
+
+
 # --- 5. USER AUTHENTICATION ---
 
 class User(Base):

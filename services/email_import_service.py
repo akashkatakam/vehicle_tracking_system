@@ -1,102 +1,168 @@
 # services/email_import_service.py
 import imaplib
 import email
-from email.header import decode_header
 import streamlit as st
-import pandas as pd
+from sqlalchemy.orm import Session
+import models
 
-EMAIL_HOST = st.secrets.get('email')['EMAIL_HOST']
-EMAIL_USER = st.secrets.get('email')['EMAIL_USER']
-EMAIL_PASS = st.secrets.get('email')['EMAIL_PASS']
 
-def fetch_latest_s08_email():
+def fetch_and_process_emails(db: Session, target_branch_id: int):
     """
-    Connects to Rediffmail IMAP, finds the latest email from the specified sender
-    with an S08 attachment, and returns the file content.
+    Connects to Gmail and filters emails by SENDER.
+    - Branch 1: Fetches emails FROM 'katkamhonda@rediffmail.com'
+    - Branch 3: Fetches emails FROM 'sap.admin@honda2wheelersindia.com'
     """
+    all_new_data = []
+    logs = []
+
+    # 1. Load Decoder Mappings
+    mappings = db.query(models.ProductMapping).all()
+    decoder_map = {
+        (m.model_code.strip(), m.variant_code.strip()): (m.real_model, m.real_variant)
+        for m in mappings
+    }
+
+    # 2. Find Account Config
+    target_account = None
+    for acc in st.secrets.email.accounts:
+        b_id = acc.branch_id if hasattr(acc, 'branch_id') else acc['branch_id']
+        if int(b_id) == int(target_branch_id):
+            target_account = acc
+            break
+
+    if not target_account:
+        return [], [f"❌ No config found for Branch ID {target_branch_id}"]
+
+    # Unpack Credentials & SENDER FILTER
+    acc_name = target_account.name if hasattr(target_account, 'name') else target_account['name']
+    host = target_account.host if hasattr(target_account, 'host') else target_account['host']
+    user = target_account.user if hasattr(target_account, 'user') else target_account['user']
+    password = target_account.pass_ if hasattr(target_account, 'pass_') else target_account['pass']
+
+    # CRITICAL: Get the specific sender for this branch
+    target_sender = target_account.sender_filter if hasattr(target_account, 'sender_filter') else target_account.get(
+        'sender_filter', '')
+
+    if not target_sender:
+        logs.append(f"❌ No 'sender_filter' defined in secrets for {acc_name}.")
+        return [], logs
+
+    logs.append(f"🔌 Connecting to Gmail...")
+    logs.append(f"🎯 Searching for emails FROM: {target_sender}")
+
     try:
-        # 1. Connect to Rediffmail IMAP
-        mail = imaplib.IMAP4_SSL(EMAIL_HOST, 993)
-        mail.login(EMAIL_USER, EMAIL_PASS)
+        # Use IMAP SSL (Standard for Gmail)
+        with imaplib.IMAP4_SSL(host, 993) as mail:
+            mail.login(user, password)
+            mail.select("inbox")
 
-        # Rediffmail uses "INBOX" (case sensitive usually)
-        mail.select("INBOX")
+            # --- THE SEARCH ---
+            # Search specifically for emails FROM the target_sender
+            status, messages = mail.search(None, f'(FROM "{target_sender}")')
 
-        # 2. Search for emails from the sender
-        sender = st.secrets.get('email')['EMAIL_SENDER_FILTER']
-        # Search criteria: FROM sender
-        status, messages = mail.search(None, f'(FROM "{sender}")')
+            if status != "OK" or not messages[0]:
+                logs.append(f"   ℹ️ No emails found from {target_sender}.")
+                return [], logs
 
-        if status != "OK" or not messages[0]:
-            return None, "No emails found from HMSI (dispatch@honda.co.in)."
+            email_ids = messages[0].split()
 
-        # Get the latest email (last ID in the list)
-        latest_email_id = messages[0].split()[-1]
-        status, msg_data = mail.fetch(latest_email_id, "(RFC822)")
+            # Scan Last 30 Emails (Reverse Order: Newest First)
+            recent_ids = list(reversed(email_ids))[:30]
 
-        msg = email.message_from_bytes(msg_data[0][1])
-        subject, encoding = decode_header(msg["Subject"])[0]
-        if isinstance(subject, bytes):
-            subject = subject.decode(encoding if encoding else "utf-8")
+            s08_files_found = 0
+            target_count = 5
 
-        # 3. Extract Attachment
-        for part in msg.walk():
-            if part.get_content_maintype() == "multipart":
-                continue
-            if part.get("Content-Disposition") is None:
-                continue
+            logs.append(f"   🔎 Scanning recent {len(recent_ids)} emails...")
 
-            filename = part.get_filename()
-            if filename and ("s08" in filename.lower() or ".txt" in filename.lower()):
-                file_content = part.get_payload(decode=True).decode("utf-8")
-                return file_content, f"Successfully fetched: {filename}"
+            for eid in recent_ids:
+                if s08_files_found >= target_count:
+                    break
 
-        return None, "Email found, but no S08/TXT attachment detected."
+                try:
+                    # Fetch Full Email
+                    _, msg_data = mail.fetch(eid, "(RFC822)")
+                    msg = email.message_from_bytes(msg_data[0][1])
+
+                    # Extract Attachment
+                    content, filename = _extract_text_attachment(msg)
+
+                    if not content:
+                        continue  # Skip emails without S08 attachment
+
+                    s08_files_found += 1
+
+                    # 1. Peek Load Ref
+                    first_ref = _peek_load_ref(content)
+                    if not first_ref:
+                        logs.append(f"      ⚠️ File '{filename}' found, but no Load Ref.")
+                        continue
+
+                    # 2. Duplicate Check
+                    exists = db.query(models.VehicleMaster).filter(
+                        models.VehicleMaster.load_reference_number == first_ref
+                    ).first()
+
+                    if exists:
+                        logs.append(f"      ⏭️ Found Load {first_ref} (Skipped - Already in DB).")
+                        continue
+
+                    # 3. Parse
+                    parsed = _parse_s08_content(content, acc_name, decoder_map)
+                    if parsed:
+                        all_new_data.extend(parsed)
+                        logs.append(f"      ✅ Found NEW Load {first_ref} ({len(parsed)} vehicles).")
+
+                except Exception as e:
+                    logs.append(f"      ⚠️ Error reading email {eid.decode()}: {e}")
+
+            if s08_files_found == 0:
+                logs.append("   ℹ️ Emails found from sender, but none had S08 attachments.")
 
     except Exception as e:
-        return None, f"Email Connection Error: {e}"
+        logs.append(f"   ❌ Connection Error: {str(e)}")
+
+    return all_new_data, logs
 
 
-def parse_s08_content(file_content):
-    """
-    Parses the raw text of the S08 file into a list of dictionaries.
-    Indices are calibrated to the S08S file format provided.
-    """
-    batch_data = []
-    lines = file_content.split('\n')
-
-    for line in lines:
-        # Filter: Skip short lines or lines that don't look like vehicle records.
-        # Valid records have 'B' at index 25 (the 26th character).
-        if len(line) < 180 or line[25] != 'B':
+# --- HELPERS (Unchanged) ---
+def _extract_text_attachment(msg):
+    for part in msg.walk():
+        if part.get_content_maintype() == 'multipart' or part.get('Content-Disposition') is None:
             continue
+        filename = part.get_filename() or ""
+        if "s08" in filename.lower() and ".txt" in filename.lower():
+            try:
+                return part.get_payload(decode=True).decode("utf-8", errors='ignore'), filename
+            except:
+                return None, None
+    return None, None
 
+
+def _peek_load_ref(content):
+    for line in content.splitlines():
+        if len(line) < 180 or line[25] != 'B': continue
+        return line[84:97].strip()
+    return None
+
+
+def _parse_s08_content(content, source_name, decoder_map):
+    batch = []
+    for line in content.splitlines():
+        if len(line) < 180 or line[25] != 'B': continue
         try:
-            # --- EXTRACT DATA BASED ON FILE STRUCTURE ---
-            # 1. Model: Indices 27 to 38
-            model_code = line[27:38].strip()
+            m_code = line[27:38].strip()
+            v_code = line[38:45].strip()
+            real_m, real_v = decoder_map.get((m_code, v_code), (m_code, v_code))
 
-            # 2. Variant: Indices 38 to 45
-            variant_code = line[38:45].strip()
-
-            # 3. Color Code: Indices 45 to 60
-            color_code = line[45:60].strip()
-
-            # 4. Chassis (VIN): Indices 113 to 130
-            chassis = line[113:130].strip()
-
-            # 5. Engine: Indices 173 to 186
-            # Note: Index 172 is '0', Engine number starts at 173
-            engine = line[173:186].strip()
-
-            batch_data.append({
-                'chassis_no': chassis,
-                'engine_no': engine,
-                'model': model_code,
-                'variant': variant_code,
-                'color': color_code  # This is the code (e.g., NH303)
+            batch.append({
+                'source_account': source_name,
+                'load_reference': line[84:97].strip(),
+                'chassis_no': line[113:130].strip(),
+                'engine_no': line[173:186].strip(),
+                'color': line[45:60].strip(),
+                'model': real_m,
+                'variant': real_v,
             })
-        except Exception:
-            continue  # Skip malformed lines
-
-    return batch_data
+        except:
+            continue
+    return batch
