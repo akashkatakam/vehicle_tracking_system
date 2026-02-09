@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import date
 import time
 from database import SessionLocal
+from models import IST_TIMEZONE
 from services import stock_service, sales_service, branch_service, report_service, email_import_service
 import models
 from streamlit_qrcode_scanner import qrcode_scanner
@@ -26,7 +27,7 @@ def load_config_data():
 
 
 # --- 2. REPORT DIALOG (POPUP) ---
-@st.dialog("📊 Detailed Sales & Transfers")
+@st.dialog("📊 Detailed Sales & Transfers", width="large")
 def show_daily_report_dialog(start_d, end_d, head_map):
     """
     Renders the Sales and Transfer report in a modal popup.
@@ -705,8 +706,7 @@ def render():
             today = date.today()
             date_range = st.date_input(
                 "Date Range",
-                value=(today, today),
-                max_value=today
+                value=(today, today)
             )
 
             if isinstance(date_range, tuple) and len(date_range) == 2:
