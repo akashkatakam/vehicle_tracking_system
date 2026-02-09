@@ -55,7 +55,7 @@ def render():
                 else:
                     try:
                         with SessionLocal() as db:
-                            success, message = mgr.complete_pdi(
+                            success, message = sales_service.complete_pdi(
                                 db, 
                                 sale_id, 
                                 chassis_no=chassis_val.strip(), 
