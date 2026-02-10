@@ -84,6 +84,7 @@ def search_vehicles(db: Session, chassis: str = None, model: str = None, variant
             query = query.filter(models.VehicleMaster.color == color)
 
     # Limit results to prevent massive dumps if filters are loose
+    query = query.filter(models.VehicleMaster.status == 'In Stock')
     query = query.limit(500)
 
     return pd.read_sql(query.statement, db.get_bind())
