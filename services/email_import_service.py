@@ -1,19 +1,24 @@
 # services/email_import_service.py
 import imaplib
 import email
-import streamlit as st
+import pandas as pd
 from sqlalchemy.orm import Session
 import models
 
 
-def fetch_and_process_emails(db: Session, target_branch_id: int):
+def fetch_and_process_emails(db: Session, target_branch_id: int, color_map: dict = None, progress_callback=None):
     """
     Connects to Gmail and filters emails by SENDER.
-    - Branch 1: Fetches emails FROM 'katkamhonda@rediffmail.com'
-    - Branch 3: Fetches emails FROM 'sap.admin@honda2wheelersindia.com'
+    Accepts a color_map to translate OEM codes to readable colors.
+    Accepts a progress_callback(str) to update the UI in real-time.
     """
     all_new_data = []
     logs = []
+
+    def log(msg):
+        logs.append(msg)
+        if progress_callback:
+            progress_callback(msg)
 
     # 1. Load Decoder Mappings
     mappings = db.query(models.ProductMapping).all()
@@ -24,6 +29,9 @@ def fetch_and_process_emails(db: Session, target_branch_id: int):
 
     # 2. Find Account Config
     target_account = None
+    # Streamlit secrets access (assuming imported or available in context, passed implicitly via runtime)
+    # Note: In a pure service, we might pass config in, but sticking to existing pattern:
+    import streamlit as st
     for acc in st.secrets.email.accounts:
         b_id = acc.branch_id if hasattr(acc, 'branch_id') else acc['branch_id']
         if int(b_id) == int(target_branch_id):
@@ -33,68 +41,63 @@ def fetch_and_process_emails(db: Session, target_branch_id: int):
     if not target_account:
         return [], [f"❌ No config found for Branch ID {target_branch_id}"]
 
-    # Unpack Credentials & SENDER FILTER
+    # Unpack Credentials
     acc_name = target_account.name if hasattr(target_account, 'name') else target_account['name']
     host = target_account.host if hasattr(target_account, 'host') else target_account['host']
     user = target_account.user if hasattr(target_account, 'user') else target_account['user']
     password = target_account.pass_ if hasattr(target_account, 'pass_') else target_account['pass']
-
-    # CRITICAL: Get the specific sender for this branch
     target_sender = target_account.sender_filter if hasattr(target_account, 'sender_filter') else target_account.get(
         'sender_filter', '')
 
     if not target_sender:
-        logs.append(f"❌ No 'sender_filter' defined in secrets for {acc_name}.")
+        log(f"❌ No 'sender_filter' defined for {acc_name}.")
         return [], logs
 
-    logs.append(f"🔌 Connecting to Gmail...")
-    logs.append(f"🎯 Searching for emails FROM: {target_sender}")
+    log(f"🔌 Connecting to {host}...")
 
     try:
-        # Use IMAP SSL (Standard for Gmail)
         with imaplib.IMAP4_SSL(host, 993) as mail:
             mail.login(user, password)
             mail.select("inbox")
 
-            # --- THE SEARCH ---
-            # Search specifically for emails FROM the target_sender
+            log(f"🎯 Searching emails from: {target_sender}")
             status, messages = mail.search(None, f'(FROM "{target_sender}")')
 
             if status != "OK" or not messages[0]:
-                logs.append(f"   ℹ️ No emails found from {target_sender}.")
+                log(f"ℹ️ No emails found from target sender.")
                 return [], logs
 
             email_ids = messages[0].split()
-
-            # Scan Last 30 Emails (Reverse Order: Newest First)
+            # Scan Last 30 Emails
             recent_ids = list(reversed(email_ids))[:30]
+
+            log(f"🔎 Found {len(email_ids)} emails. Scanning recent {len(recent_ids)}...")
 
             s08_files_found = 0
             target_count = 5
 
-            logs.append(f"   🔎 Scanning recent {len(recent_ids)} emails...")
-
-            for eid in recent_ids:
+            for idx, eid in enumerate(recent_ids):
                 if s08_files_found >= target_count:
                     break
 
+                # Feedback every few emails
+                if idx % 5 == 0:
+                    log(f"   ⏳ Scanning email {idx + 1}/{len(recent_ids)}...")
+
                 try:
-                    # Fetch Full Email
                     _, msg_data = mail.fetch(eid, "(RFC822)")
                     msg = email.message_from_bytes(msg_data[0][1])
-
-                    # Extract Attachment
                     content, filename = _extract_text_attachment(msg)
 
                     if not content:
-                        continue  # Skip emails without S08 attachment
+                        continue
 
                     s08_files_found += 1
 
                     # 1. Peek Load Ref
                     first_ref = _peek_load_ref(content)
                     if not first_ref:
-                        logs.append(f"      ⚠️ File '{filename}' found, but no Load Ref.")
+                        log(f"      ⚠️ Skipped {filename}: No Load Ref found.")
                         continue
 
                     # 2. Duplicate Check
@@ -103,28 +106,30 @@ def fetch_and_process_emails(db: Session, target_branch_id: int):
                     ).first()
 
                     if exists:
-                        logs.append(f"      ⏭️ Found Load {first_ref} (Skipped - Already in DB).")
+                        log(f"      ⏭️ Skipped Load {first_ref} (Already in DB).")
                         continue
 
-                    # 3. Parse
-                    parsed = _parse_s08_content(content, acc_name, decoder_map)
+                    # 3. Parse with Color Map
+                    parsed = _parse_s08_content(content, acc_name, decoder_map, color_map)
                     if parsed:
                         all_new_data.extend(parsed)
-                        logs.append(f"      ✅ Found NEW Load {first_ref} ({len(parsed)} vehicles).")
+                        log(f"      ✅ Imported Load {first_ref} ({len(parsed)} vehicles).")
 
                 except Exception as e:
-                    logs.append(f"      ⚠️ Error reading email {eid.decode()}: {e}")
+                    log(f"      ⚠️ Error parsing email {eid.decode()}: {e}")
 
             if s08_files_found == 0:
-                logs.append("   ℹ️ Emails found from sender, but none had S08 attachments.")
+                log("   ℹ️ No S08 attachments found in recent emails.")
+            else:
+                log(f"✨ Scan complete. Found {len(all_new_data)} new vehicles.")
 
     except Exception as e:
-        logs.append(f"   ❌ Connection Error: {str(e)}")
+        log(f"❌ Connection Error: {str(e)}")
 
     return all_new_data, logs
 
 
-# --- HELPERS (Unchanged) ---
+# --- HELPERS ---
 def _extract_text_attachment(msg):
     for part in msg.walk():
         if part.get_content_maintype() == 'multipart' or part.get('Content-Disposition') is None:
@@ -145,7 +150,7 @@ def _peek_load_ref(content):
     return None
 
 
-def _parse_s08_content(content, source_name, decoder_map):
+def _parse_s08_content(content, source_name, decoder_map, color_map=None):
     batch = []
     for line in content.splitlines():
         if len(line) < 180 or line[25] != 'B': continue
@@ -154,12 +159,19 @@ def _parse_s08_content(content, source_name, decoder_map):
             v_code = line[38:45].strip()
             real_m, real_v = decoder_map.get((m_code, v_code), (m_code, v_code))
 
+            # Color Mapping Logic
+            raw_color_code = line[45:60].strip()
+            final_color = raw_color_code
+            if color_map:
+                # Try direct match or stripping spaces
+                final_color = color_map.get(raw_color_code, raw_color_code)
+
             batch.append({
                 'source_account': source_name,
                 'load_reference': line[84:97].strip(),
                 'chassis_no': line[113:130].strip(),
                 'engine_no': line[173:186].strip(),
-                'color': line[45:60].strip(),
+                'color': final_color,  # Use readable color
                 'model': real_m,
                 'variant': real_v,
             })

@@ -84,7 +84,6 @@ def search_vehicles(db: Session, chassis: str = None, model: str = None, variant
             query = query.filter(models.VehicleMaster.color == color)
 
     # Limit results to prevent massive dumps if filters are loose
-    query = query.filter(models.VehicleMaster.status.in_(['In Stock', 'In Transit']))
     query = query.limit(500)
 
     return pd.read_sql(query.statement, db.get_bind())
@@ -97,6 +96,24 @@ def get_all_product_mappings(db: Session) -> pd.DataFrame:
         models.ProductMapping.variant_code,
         models.ProductMapping.real_model,
         models.ProductMapping.real_variant
+    )
+    return pd.read_sql(query.statement, db.get_bind())
+
+
+def get_vehicles_in_load(db: Session, branch_id: str, load_reference: str) -> pd.DataFrame:
+    """
+    Fetches details of all 'In Transit' vehicles for a specific load.
+    """
+    query = db.query(
+        models.VehicleMaster.chassis_no.label("Chassis No"),
+        models.VehicleMaster.model.label("Model"),
+        models.VehicleMaster.variant.label("Variant"),
+        models.VehicleMaster.color.label("Color"),
+        models.VehicleMaster.engine_no.label("Engine No")
+    ).filter(
+        models.VehicleMaster.current_branch_id == branch_id,
+        models.VehicleMaster.load_reference_number == load_reference,
+        models.VehicleMaster.status == 'In Transit'
     )
     return pd.read_sql(query.statement, db.get_bind())
 
